@@ -1,5 +1,7 @@
 ideas:
 - this is a take off on loopcollector
 - constantly record from selected input
-- once every period, submit audio to echo nest analyze
 - assemble predefined rhythm and melody tracks using pieces
+- how do we do this? take a recording of a loop. split it into X frequency bands. split each band into 32nd notes.
+- do the same with incoming audio.
+- when reassembling audio, stop taking pieces into each of the original loop's buckets when it's full
