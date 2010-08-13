@@ -1,7 +1,12 @@
 ideas:
 - this is a take off on loopcollector
-- constantly record from selected input
-- assemble predefined rhythm and melody tracks using pieces
+- constantly record from as many inputs as possible. each channel is independent, i.e. stereo input creates two sets of samples
+- assemble predefined rhythm tracks using pieces. once again each track is independent. stereo inputs create two sets of buckets that are filled separately and played back together. mono tracks create a single bucket played back in mono. won't consider more than two channels.
 - how do we do this? take a recording of a loop. split it into X frequency bands. split each band into 32nd notes.
 - do the same with incoming audio.
 - when reassembling audio, stop taking pieces into each of the original loop's buckets when it's full
+- once a track is completely filled, queue incoming samples. drop oldest sample when when a set of new samples would be as loud
+- there needs to be a gate on samples that are accepted
+- app will need a file that describes each input track (number of measures, file format, # channels can be discovered)
+- video component? maybe display graphical representation of buckets?
+- choosing next track to playback is at random
