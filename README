@@ -5,8 +5,19 @@ ideas:
 - how do we do this? take a recording of a loop. split it into X frequency bands. split each band into 32nd notes.
 - do the same with incoming audio.
 - when reassembling audio, stop taking pieces into each of the original loop's buckets when it's full
-- once a track is completely filled, queue incoming samples. drop oldest sample when when a set of new samples would be as loud
+- once a track is completely filled, queue incoming samples. drop oldest sample when a set of new samples would be as loud
 - there needs to be a gate on samples that are accepted
 - app will need a file that describes each input track (number of measures, file format, # channels can be discovered)
-- video component? maybe display graphical representation of buckets?
-- choosing next track to playback is at random
+- choosing next track to playback is at random. choosing next track whose buckets to fill is also random
+- analysis only needs to be done once and results can be saved
+- RMS values for all
+
+
+options for technology
+* openframeworks again
++ c++, so i know the language pretty well
++ somewhat familiar with of
++ portable-ish
++ does video and graphics also
+- graphics too low level for me
+- audio support is merely a wrapper around RtAudio anyway
