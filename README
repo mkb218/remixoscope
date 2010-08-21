@@ -11,13 +11,8 @@ ideas:
 - choosing next track to playback is at random. choosing next track whose buckets to fill is also random
 - analysis only needs to be done once and results can be saved
 - RMS values for all
+- i sort of want to use this as an instrument, i need some MIDI things for timing purposes
 
-
-options for technology
-* openframeworks again
-+ c++, so i know the language pretty well
-+ somewhat familiar with of
-+ portable-ish
-+ does video and graphics also
-- graphics too low level for me
-- audio support is merely a wrapper around RtAudio anyway
+go language-wise seems well suited for a file based non realtime version this project, primarily because of goroutines. 
+- for audio file i/o, i will need to use either cgo to call out to libsox or pipes to do ipc. ipc is probably easier
+- for signal processing i am left with my own hacky stuff
