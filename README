@@ -14,5 +14,16 @@ ideas:
 - i sort of want to use this as an instrument, i need some MIDI things for timing purposes
 
 go language-wise seems well suited for a file based non realtime version this project, primarily because of goroutines. 
-- for audio file i/o, i will need to use either cgo to call out to libsox or pipes to do ipc. ipc is probably easier
+- for audio file i/o, i will need to use either cgo to call out to libsox or pipes to do ipc. ipc is probably easier but requires reading the file many times.
 - for signal processing i am left with my own hacky stuff
+- maybe make a wrapper for the dft_filter functions that copy output to a second buffer?
+
+pd may work. super collider too. nsound. impromptu. check out capabilities of all of them.
+
+in fact, i think i need to split this into two parts.
+
+the analyzer will work on input audio files, and spit out descriptor files.
+MAYBE work on audio files
+
+something else will consume them. file based stuff in go.
+
