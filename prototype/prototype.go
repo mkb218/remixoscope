@@ -3,16 +3,17 @@ package main
 //#include "sox.h"
 
 import (
-	"C"
 	"strings"
 	"strconv"
 	"flag"
-	"io"
+	"fmt"
 	"os"
-	"file"
-	"math"
 	"json"
 	"exec"
+	"bytes"
+	"regexp"
+	"math"
+	"bufio"
 	vector "container/vector"
 	ioutil "io/ioutil"
 )
@@ -30,10 +31,10 @@ type track []beat
 
 type config struct {
 	inputlist string
-	bands int
+	bands uint
 	sox string
-	soxopts StringVector
-	output io.Writer
+	soxopts vector.StringVector
+	output *bufio.Writer
 }
 
 type input struct {
@@ -42,36 +43,95 @@ type input struct {
 	channels uint
 }
 
-func openband(config *config, remixspec StringVector, filename string, bandwidth, band int) chan frame {
-	currsoxopts := make(StringVector, 1)
+var filetoclose *os.File = nil
+
+func AppendSlice(this * vector.StringVector, append []string) {
+	for _, s := range append {
+		this.Push(s)
+	}
+}
+
+func openband(config *config, remixspec *vector.StringVector, filename string, band uint) (datachan chan frame, quitchan chan bool) {
+	bandwidth := 22050 / config.bands
+	bandlow := band * bandwidth
+	bandhigh := bandlow + bandwidth
+	
+	currsoxopts := make(vector.StringVector, 0)
 	currsoxopts.Push("sox")
+	fmt.Fprintln(os.Stderr, strings.Join(currsoxopts, " "))
 	currsoxopts.Push(filename)
-	currsoxopts.AppendVector(config.soxopts)
+	fmt.Fprintln(os.Stderr, strings.Join(currsoxopts, " "))
+	currsoxopts.AppendVector(&config.soxopts)
+	fmt.Fprintln(os.Stderr, strings.Join(currsoxopts, " "))
 	currsoxopts.Push("-")
+	fmt.Fprintln(os.Stderr, strings.Join(currsoxopts, " "))
 	currsoxopts.AppendVector(remixspec)
-	p, err := exec.Run(config.sox, currsoxopts, os.Environ(), os.Getwd(), exec.DevNull, exec.Pipe, exec.DevNull)
+	fmt.Fprintln(os.Stderr, strings.Join(currsoxopts, " "))
+	currsoxopts.Push("sinc")
+	fmt.Fprintln(os.Stderr, strings.Join(currsoxopts, " "))
+	
+	if bandhigh >= 22050 {
+		currsoxopts.Push(strconv.Uitoa(bandlow))
+		fmt.Fprintln(os.Stderr, strings.Join(currsoxopts, " "))
+	} else {
+		currsoxopts.Push(strconv.Uitoa(bandlow)+"-"+strconv.Uitoa(bandhigh))
+		fmt.Fprintln(os.Stderr, strings.Join(currsoxopts, " "))
+	}
+	
+	AppendSlice(&currsoxopts, []string{"channels", "2"})
+	fmt.Fprintln(os.Stderr, strings.Join(currsoxopts, " "))
+	
+	getwd, _ := os.Getwd()
+	fmt.Fprintln(os.Stderr, strings.Join(currsoxopts, " "))
+	p, err := exec.Run(config.sox, currsoxopts, os.Environ(), getwd, exec.DevNull, exec.Pipe, exec.PassThrough)
 	if err != nil {
 		panic(fmt.Sprintf("couldn't open band %d for reason %s", band, err))
 	}
+	fmt.Fprintf(os.Stderr, "sox pid is %d\n", p.Pid)
 	// some day this will use libsox
-	outch := make(chan frame)
-	go func (out chan frame) {	
+	datachan = make(chan frame)
+	quitchan = make(chan bool)
+	go func() {	
+		buf := make([]byte, 4)
+		for {
+			size, err := p.Stdout.Read(buf)
+			if err != nil {
+				if size == 0 && err == os.EOF {
+					break
+				} else {
+					panic(fmt.Sprintf("error reading from sox! %s", err))
+				}
+			}
 		
-	} (outch)
-	return outch
+			frame := new(frame)
+			frame.left = float64(buf[0])*256+float64(buf[1])
+			frame.right = float64(buf[2])*256+float64(buf[1])
+			datachan <- *frame
+		}
+		fmt.Fprintln(os.Stderr, "Done reading file")
+		quitchan <- true
+		fmt.Fprintln(os.Stderr, "Quit message sent. Sox out.")
+	} ()
+	return datachan, quitchan
 }
 
 func (config *config) getfileinfo(filename string) (samplelength uint, channels uint) {
-	p, err := exec.Run(config.sox, ["soxi", filename], os.Environ(), os.Getwd(), exec.DevNull, exec.Pipe, exec.Pipe)
+	getwd, _ := os.Getwd()
+	p, err := exec.Run(config.sox, []string{"soxi", filename}, os.Environ(), getwd, exec.DevNull, exec.Pipe, exec.Pipe)
 	if err != nil {
-		panic(fmt.Sprintf("couldn't open soxi on file %s! %s", filename, err)
+		panic(fmt.Sprintf("couldn't open soxi on file %s! %s", filename, err))
 	}
 	
-	var soxierr, err = ioutil.ReadAll(p.Stderr)
+	var soxierr []byte
+	soxierr, err = ioutil.ReadAll(p.Stderr)
 	if err != nil {
 		panic(fmt.Sprintf("Error reading soxi stderr %s", err))
 	}
-	var soxiout, err = ioutil.ReadAll(p.Stdout)
+	if len(soxierr) > 0 {
+		panic(fmt.Sprintf("soxi had stderr %s", soxierr))
+	}
+	var soxiout []byte
+	soxiout, err = ioutil.ReadAll(p.Stdout)
 	if err != nil {
 		panic(fmt.Sprintf("Error reading soxi stdout %s", err))
 	}
@@ -80,8 +140,22 @@ func (config *config) getfileinfo(filename string) (samplelength uint, channels 
 	if err != nil {
 		panic(fmt.Sprintf("soxi returned err %s", err))
 	}
+
+	durexp := regexp.MustCompile("^Duration.* ([0-9]+) samples")
+	chanexp := regexp.MustCompile("^Channels.* ([0-9]+)")
+	for _, line := range strings.Split(string(soxiout), "\n", -1) {
+		var err os.Error = nil
+		if (durexp.MatchString(line)) {
+			samplelength, err = strconv.Atoui(durexp.FindStringSubmatch(line)[1])
+		} else if (chanexp.MatchString(line)) {
+			channels, err = strconv.Atoui(chanexp.FindStringSubmatch(line)[1])
+		}
+		if err != nil {
+			panic(fmt.Sprintf("bad int returned from soxi! %s: %s", line, err))
+		}
+	}
 	
-	for line := range strings.Split(soxiout, 
+	return samplelength, channels
 }
 
 // we need one goroutine per each band to read samples, and one goroutine to read from each channel
@@ -90,31 +164,36 @@ func (config *config) getfileinfo(filename string) (samplelength uint, channels 
 // channels[i] = openband(file, i, width)
 
 func (config *config) readinputlist() map[string]input {
-	fr, err := file.Open(config.inputlist, O_RDONLY, 0)
-	if err != 0 {
-		panic(fmt.sprintf("Can't open input list file %s for writing! %s", config.inputlist, err.String()))
-	}
-	r := bufio.NewReader(fr)
 	in := false
-	tracks := map[string]input
+	tracks := make(map[string]input)
 	var filename string
 	var info input
-	for i := 0; err != 0 ;line, err := r.ReadString('\n') {
-		if line.HasPrefix("BEGIN ") { 
+	b, err := ioutil.ReadFile(config.inputlist)
+	filestuff := bytes.NewBuffer(b).String()
+	if err != nil {
+		panic(fmt.Sprintf("error reading inputlist %s\n", err))
+	}
+	lines := strings.Split(filestuff, "\n", -1)
+	for _, line := range lines {
+		if strings.HasPrefix(line, "BEGIN ") { 
 			in = true
-			_, filename = string.Split(line, " ", 2)
+			filename = (strings.Split(line, " ", 2))[1]
 		} else if line == "END" {
 			in = false
 			tracks[filename] = info
-		} else if line.HasPrefix("LENGTH ") {
-			_, lengthstr := string.Split(line, " ", 2)
-			info.beats = strconv.Atoui64(lengthstr)
-			var samplelength, info.channels = config.getfileinfo(filename) / info.beats
+		} else if strings.HasPrefix(line, "LENGTH ") {
+			lengthstr := (strings.Split(line, " ", 2))[1]
+			info.beats, err = strconv.Atoui(lengthstr)
+			if err != nil {
+				panic(fmt.Sprintf("bad int in inputlist length %s: %s", lengthstr, err))
+			}
+			var samplelength uint
+			samplelength, info.channels = config.getfileinfo(filename)
 			info.beatlength = samplelength / info.beats
 		}
 	}
 	if in { 
-		panic("unfinished business reading input list")
+		panic(fmt.Sprintf("unfinished business reading input list", err))
 	}
 	return tracks
 }
@@ -123,59 +202,95 @@ func (config *config) writeoutput() {
 	t := config.readinputlist()
 	tracks := make([]track, len(t))
 	for filename, info := range t {
-		tracks = tracks[:1+len(tracks)]
+		fmt.Fprintf(os.Stderr, "starting file %s\n", filename)
+		remixspec := make(vector.StringVector, 0)
+		if info.channels == 1 {
+			AppendSlice(&remixspec, []string{"remix", "1", "1"})
+			// stereo is a noop
+			// everything >2 channels doesn't have enough information so I am assuming the layout based on mpeg standards
+		} else if info.channels == 3 {
+			AppendSlice(&remixspec, []string{"remix", "1,3", "2,3"})
+		} else if info.channels == 4 {
+			AppendSlice(&remixspec, []string{"remix", "1,3,4", "2,3,4"})
+		} else if info.channels == 5 {
+			AppendSlice(&remixspec, []string{"remix", "1,3,4", "2,3,5"})
+		} else if info.channels == 6 { // 5.1
+			AppendSlice(&remixspec, []string{"remix", "1,3,4,5", "2,3,4,6"})
+		} else if info.channels == 7 { // 6.1
+			AppendSlice(&remixspec, []string{"remix", "1,3,4,5,7", "2,3,4,6,7"})
+		} else if info.channels == 8 { // 7.1
+			AppendSlice(&remixspec, []string{"remix", "1,3,4,5,7", "2,3,4,6,8"})
+		} else if info.channels > 8 { // no idea, just take first two
+			AppendSlice(&remixspec, []string{"remix", "1", "2"})
+		}
+
+		fmt.Fprintf(os.Stderr, "cap %d len %d\n", cap(tracks), len(tracks))
+//		tracks = tracks[:1+len(tracks)]
 		// loop over bands
 		trackdata := make(track,info.beats)
-		for beat := range trackdata {
-			beat = make(beat, config.bands)
+		for index := uint(0); index < info.beats; index++ {
+			trackdata[index] = make(beat, config.bands)
 		}
-		i := 0
-		for band := 0; band < config.bands; band++ {
-			var channel chan frame = openband(config, filename, band)
-			var f
-			for ; f != nil; f := <-channel {
-				trackdata[i / beatlength][band].left += fabs(float64(f.left))
-				trackdata[i / beatlength][band].right += fabs(float64(f.right))
+		for band := uint(0); band < config.bands; band++ {
+			var i uint = 0
+			datachan, quitchan := openband(config, &remixspec, filename, band)
+			fmt.Fprint(os.Stderr, "got channels\n")
+			L: for {
+				select {
+				case f := <-datachan:
+					if i % 1000 == 0 {
+						fmt.Fprintf(os.Stderr, "%d\n", i)
+					}
+					trackdata[i / info.beatlength][band].left += math.Fabs(float64(f.left))
+					trackdata[i / info.beatlength][band].right += math.Fabs(float64(f.right))
+				case b := <-quitchan:
+					fmt.Fprintf(os.Stderr, "got quitchan msg %t\n", b)
+					break L;
+				}
+				i++
 			}
 		}
 		tracks[len(tracks)-1] = trackdata
 	}
 	outbytes, err := json.Marshal(tracks)
-	if err != 0 {
-		panic(fmt.sprintf("couldn't marshal JSON for tracks! SCREAM AND SHOUT %s", err.String()))
+	if err != nil {
+		panic(fmt.Sprintf("couldn't marshal JSON for tracks! SCREAM AND SHOUT %s", err.String()))
 	}
 	
-	config.output.Write(outbytes)
+	fmt.Fprintf(os.Stderr, "%d\n", len(outbytes))
+	var written int
+	written, err = config.output.Write(outbytes)
+	if err != nil {
+		panic(fmt.Sprintf("error writing bytes. written %d err %s\n", written, err))
+	} else {
+		fmt.Fprintf(os.Stderr, "written %d\n", written)
+	}
+	config.output.Flush()
+		
 }
 
 func (config *config) readflags() {
 	flag.StringVar(&config.inputlist, "inputlist", "inputlist", "list of input files with metadata")
-	flag.IntVar(&config.bands, "bands", 20, "number of bands")
+	flag.UintVar(&config.bands, "bands", 10, "number of bands")
 	flag.StringVar(&config.sox, "sox", "/usr/bin/sox", "Path to sox binary. Default is /usr/bin/sox")
 	o := flag.String("output", "-", "output file. Use \"-\" for stdout.")
 	flag.Parse()
 	if *o == "-" {
 		config.output = bufio.NewWriter(os.Stdout)
 	} else {
-		f, err := os.Open(*o, 0, 0)
-		if err != 0 {
-			panic(fmt.sprintf("couldn't open file %s for output! error %s", *s, err.String()))
+		f, err := os.Open(*o, os.O_CREAT, 0666)
+		if err != nil {
+			panic(fmt.Sprintf("couldn't open file %s for output! error %s", *o, err.String()))
 		}
 		config.output = bufio.NewWriter(f)
+		filetoclose = f
 	}
 	
-	config.soxopts = make(vector.StringVector, 10)
+	config.soxopts = make(vector.StringVector, 0)
 	if flag.NArg() > 0 {
-		config.soxopts.AppendVector(flag.Args())
+		AppendSlice(&config.soxopts, flag.Args())
 	} else {
-		config.soxopts.Push("-b")
-		config.soxopts.Push("16")
-		config.soxopts.Push("-e")
-		config.soxopts.Push("signed-integer")
-		config.soxopts.Push("-r")
-		config.soxopts.Push("44100")
-		config.soxopts.Push("-t")
-		config.soxopts.Push("raw")
+		AppendSlice(&config.soxopts, []string{"-b","16","-e","signed-integer","-B", "-r","44100","-t","raw"})
 	}
 }
 
@@ -183,4 +298,7 @@ func main() {
 	config := new(config)
 	config.readflags()
 	config.writeoutput()
+	if filetoclose != nil {
+		filetoclose.Close()
+	}
 }
