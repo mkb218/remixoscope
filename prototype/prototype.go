@@ -26,8 +26,12 @@ type frame struct {
 	left, right float64
 }
 
-type beat []frame // one frame per band
-type track []beat
+type beat struct {
+	frames []frame // one frame per band
+}
+type track struct {
+	beats []beat
+}
 
 type config struct {
 	inputlist string
@@ -42,6 +46,8 @@ type input struct {
 	beatlength uint
 	channels uint
 }
+
+type FileWriter string
 
 var filetoclose *os.File = nil
 
@@ -200,7 +206,7 @@ func (config *config) readinputlist() map[string]input {
 
 func (config *config) writeoutput() {
 	t := config.readinputlist()
-	tracks := make([]track, len(t))
+	tracks := make(map[string]track)
 	for filename, info := range t {
 		fmt.Fprintf(os.Stderr, "starting file %s\n", filename)
 		remixspec := make(vector.StringVector, 0)
@@ -224,12 +230,12 @@ func (config *config) writeoutput() {
 			AppendSlice(&remixspec, []string{"remix", "1", "2"})
 		}
 
-		fmt.Fprintf(os.Stderr, "cap %d len %d\n", cap(tracks), len(tracks))
 //		tracks = tracks[:1+len(tracks)]
 		// loop over bands
-		trackdata := make(track,info.beats)
+		var trackdata track
+		trackdata.beats = make([]beat,info.beats)
 		for index := uint(0); index < info.beats; index++ {
-			trackdata[index] = make(beat, config.bands)
+			trackdata.beats[index].frames = make([]frame, config.bands)
 		}
 		for band := uint(0); band < config.bands; band++ {
 			var i uint = 0
@@ -241,8 +247,8 @@ func (config *config) writeoutput() {
 					if i % 1000 == 0 {
 						fmt.Fprintf(os.Stderr, "%d\n", i)
 					}
-					trackdata[i / info.beatlength][band].left += math.Fabs(float64(f.left))
-					trackdata[i / info.beatlength][band].right += math.Fabs(float64(f.right))
+					trackdata.beats[i / info.beatlength].frames[band].left += math.Fabs(float64(f.left))
+					trackdata.beats[i / info.beatlength].frames[band].right += math.Fabs(float64(f.right))
 				case b := <-quitchan:
 					fmt.Fprintf(os.Stderr, "got quitchan msg %t\n", b)
 					break L;
@@ -250,7 +256,7 @@ func (config *config) writeoutput() {
 				i++
 			}
 		}
-		tracks[len(tracks)-1] = trackdata
+		tracks[filename] = trackdata
 	}
 	outbytes, err := json.Marshal(tracks)
 	if err != nil {
@@ -260,13 +266,16 @@ func (config *config) writeoutput() {
 	fmt.Fprintf(os.Stderr, "%d\n", len(outbytes))
 	var written int
 	written, err = config.output.Write(outbytes)
+	
 	if err != nil {
 		panic(fmt.Sprintf("error writing bytes. written %d err %s\n", written, err))
 	} else {
 		fmt.Fprintf(os.Stderr, "written %d\n", written)
 	}
-	config.output.Flush()
-		
+	err = config.output.Flush()
+	if err != nil {
+		panic(fmt.Sprintf("flushing output failed! %s",err))
+	}
 }
 
 func (config *config) readflags() {
@@ -278,10 +287,11 @@ func (config *config) readflags() {
 	if *o == "-" {
 		config.output = bufio.NewWriter(os.Stdout)
 	} else {
-		f, err := os.Open(*o, os.O_CREAT, 0666)
+		f, err := os.Open(*o, os.O_CREAT|os.O_WRONLY|os.O_TRUNC, 0666)
 		if err != nil {
 			panic(fmt.Sprintf("couldn't open file %s for output! error %s", *o, err.String()))
 		}
+		fmt.Fprintf(os.Stderr, "File open, descriptor is %d\n", f.Fd())
 		config.output = bufio.NewWriter(f)
 		filetoclose = f
 	}
@@ -299,6 +309,7 @@ func main() {
 	config.readflags()
 	config.writeoutput()
 	if filetoclose != nil {
+		fmt.Fprintln(os.Stderr, "closing file")
 		filetoclose.Close()
 	}
 }
