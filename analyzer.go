@@ -241,14 +241,20 @@ func (config *config) writeoutput() {
 			var i uint = 0
 			datachan, quitchan := openband(config, &remixspec, filename, band)
 			fmt.Fprint(os.Stderr, "got channels\n")
+			fmt.Fprintf(os.Stderr, "beatlength %d, band %d / %d, beats %d\n", info.beatlength, band, config.bands, info.beats)
 			L: for {
 				select {
 				case f := <-datachan:
 					if i % 1000 == 0 {
 						fmt.Fprintf(os.Stderr, "%d\n", i)
 					}
-					trackdata.beats[i / info.beatlength].frames[band].left += math.Fabs(float64(f.left))
-					trackdata.beats[i / info.beatlength].frames[band].right += math.Fabs(float64(f.right))
+					dex := i / info.beatlength
+					if dex >= uint(len(trackdata.beats)) {
+						dex = uint(len(trackdata.beats)) - 1
+						fmt.Fprintln(os.Stderr, "overflow!")
+					}
+					trackdata.beats[dex].frames[band].left += math.Fabs(float64(f.left))
+					trackdata.beats[dex].frames[band].right += math.Fabs(float64(f.right))
 				case b := <-quitchan:
 					fmt.Fprintf(os.Stderr, "got quitchan msg %t\n", b)
 					break L;
@@ -281,7 +287,8 @@ func (config *config) writeoutput() {
 func (config *config) readflags() {
 	flag.StringVar(&config.inputlist, "inputlist", "inputlist", "list of input files with metadata")
 	flag.UintVar(&config.bands, "bands", 10, "number of bands")
-	flag.StringVar(&config.sox, "sox", "/usr/bin/sox", "Path to sox binary. Default is /usr/bin/sox")
+	soxpath, _ := exec.LookPath("sox")
+	flag.StringVar(&config.sox, "sox", soxpath, "Path to sox binary. Default is /usr/bin/sox")
 	o := flag.String("output", "-", "output file. Use \"-\" for stdout.")
 	flag.Parse()
 	if *o == "-" {

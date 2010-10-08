@@ -1,9 +1,9 @@
 ideas:
 - this is a take off on loopcollector
 - constantly record from as many inputs as possible. each channel is independent, i.e. stereo input creates two sets of samples
-- assemble predefined rhythm tracks using pieces. once again each track is independent. stereo inputs create two sets of buckets that are filled separately and played back together. mono tracks create a single bucket played back in mono. won't consider more than two channels.
-- how do we do this? take a recording of a loop. split it into X frequency bands. split each band into 32nd notes.
-- do the same with incoming audio.
+- assemble predefined rhythm tracks using pieces. once again each track is independent. stereo inputs create two sets of buckets that are filled separately and played back together. mono tracks create two identical buckets. more than two channels = mixdown to stereo
+- how do we do this? take a recording. split it into X frequency bands. split each band into N notes (configurable per file).
+- do the same with incoming audio (length of a beat is whatever you want).
 - when reassembling audio, stop taking pieces into each of the original loop's buckets when it's full
 - once a track is completely filled, queue incoming samples. drop oldest sample when a set of new samples would be as loud
 - there needs to be a gate on samples that are accepted
@@ -27,3 +27,4 @@ MAYBE work on audio files
 
 something else will consume them. file based stuff in go.
 
+sc class to read json file and present X outputs of bands
