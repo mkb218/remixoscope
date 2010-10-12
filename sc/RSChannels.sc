@@ -62,10 +62,9 @@ RSChannels {
 		 		nextChar = file.getChar();
 		 		if ( nextChar == nil, {done = true});
 			});
-			^beats;
+			channels = beats;
 		} {|error|
 			error.throw
 		};
 	}
 }
-	    
