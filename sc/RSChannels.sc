@@ -14,18 +14,17 @@ BeatInfo {
 }
 
 RSChannels {
-	var <channels, <beatcount, <>filename;
+	var <channels, <beatcount, <filename;
 	*newWithFilename { 
 		arg f;
-		var o = super.new;
-		o.filename = f;
-		^o;
+		^super.newCopyArgs(nil, nil, f);
 	}
 	
 	read {
 		try {
 			var file = File.open(this.filename, "rb");
 			var nextChar, beats, done, bandcount;
+			channels = Dictionary.new;
 			"file open".postln;
 			if ( file.isOpen != true, { Error("couldn't open file" + filename + "!").throw } );
 			nextChar = file.getChar();
@@ -54,10 +53,10 @@ RSChannels {
 						beats[beat].bands[band].right = file.getDouble();
 					});
 				});
+				channels = channels.add(inputname -> beats);
 		 		nextChar = file.getChar();
 		 		if ( nextChar == nil, {done = true});
 			});
-			channels = beats;
 		} {|error|
 			error.throw
 		};
