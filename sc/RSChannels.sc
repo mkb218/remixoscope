@@ -13,10 +13,8 @@ BeatInfo {
 	}
 }
 
-
-
 RSChannels {
-	var <channels, <>filename;
+	var <channels, <beatcount, <>filename;
 	*newWithFilename { 
 		arg f;
 		var o = super.new;
@@ -39,7 +37,6 @@ RSChannels {
 			nextChar = file.getChar();
 			while ( { done == False }, {
 				var inputname;
-				var beatcount;
 				while ( { (nextChar != $|).and(nextChar != nil) }, { inputname = inputname ++ nextChar; nextChar = file.getChar() } );
 				if (nextChar == nil, { Error("premature eof in" + filename).throw });
 				nextChar = file.getChar();
@@ -47,11 +44,9 @@ RSChannels {
 				while ( { (nextChar != $|).and(nextChar != nil) }, { beatcount = beatcount ++ nextChar; nextChar = file.getChar() } );
 				if (nextChar == nil, { Error("premature eof in" + filename).throw });
 				beatcount = beatcount.asInteger;
-				beatcount.postln;
 				beats = Array.new(beatcount);
 				beatcount.do({
 					arg beat;
-					beat.postln;
 					beats = beats.add(BeatInfo.new(bandcount));					bandcount.do({
 						arg band;
 						beats[beat].bands.add(BandInfo.new());
