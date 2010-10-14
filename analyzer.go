@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"math"
 	"bufio"
+	binary "encoding/binary"
 	vector "container/vector"
 	ioutil "io/ioutil"
 )
@@ -31,6 +32,16 @@ type beat struct {
 type track struct {
 	beats []beat
 	info *input
+}
+
+type StringWriter struct {
+	out *string
+}
+
+func (this *StringWriter) Write(p []byte) (n int, err os.Error) {
+	tmp := fmt.Sprintf("%s", p)
+	this.out = &tmp
+	return len(tmp), nil
 }
 
 type config struct {
@@ -64,28 +75,19 @@ func openband(config *config, remixspec *vector.StringVector, filename string, b
 
 	currsoxopts := make(vector.StringVector, 0)
 	currsoxopts.Push("sox")
-	fmt.Fprintln(os.Stderr, strings.Join(currsoxopts, " "))
 	currsoxopts.Push(filename)
-	fmt.Fprintln(os.Stderr, strings.Join(currsoxopts, " "))
 	currsoxopts.AppendVector(&config.soxopts)
-	fmt.Fprintln(os.Stderr, strings.Join(currsoxopts, " "))
 	currsoxopts.Push("-")
-	fmt.Fprintln(os.Stderr, strings.Join(currsoxopts, " "))
 	currsoxopts.AppendVector(remixspec)
-	fmt.Fprintln(os.Stderr, strings.Join(currsoxopts, " "))
 	currsoxopts.Push("sinc")
-	fmt.Fprintln(os.Stderr, strings.Join(currsoxopts, " "))
 
 	if bandhigh >= 22050 {
 		currsoxopts.Push(strconv.Uitoa(bandlow))
-		fmt.Fprintln(os.Stderr, strings.Join(currsoxopts, " "))
 	} else {
 		currsoxopts.Push(strconv.Uitoa(bandlow) + "-" + strconv.Uitoa(bandhigh))
-		fmt.Fprintln(os.Stderr, strings.Join(currsoxopts, " "))
 	}
 
 	AppendSlice(&currsoxopts, []string{"channels", "2"})
-	fmt.Fprintln(os.Stderr, strings.Join(currsoxopts, " "))
 
 	getwd, _ := os.Getwd()
 	fmt.Fprintln(os.Stderr, strings.Join(currsoxopts, " "))
@@ -247,10 +249,10 @@ func (config *config) writeoutput() {
 			for {
 				select {
 				case f := <-datachan:
-					if i%1000 == 0 {
-						fmt.Fprintf(os.Stderr, "%d\n", i)
-					}
 					dex := i / info.beatlength
+					if i%10000 == 0 {
+						fmt.Fprintf(os.Stderr, "%f %f\n", trackdata.beats[dex].frames[band].left, trackdata.beats[dex].frames[band].right)
+					}
 					if dex >= uint(len(trackdata.beats)) {
 						dex = uint(len(trackdata.beats)) - 1
 						fmt.Fprintln(os.Stderr, "overflow!")
@@ -276,8 +278,6 @@ func (config *config) writeoutput() {
 
 		if err != nil {
 			panic(fmt.Sprintf("error writing bytes. written %d err %s\n", written, err))
-		} else {
-			fmt.Fprintf(os.Stderr, "written %d\n", written)
 		}
 	})
 	err := config.output.Flush()
@@ -293,11 +293,18 @@ func (config *config) marshal(tracks map[string]track) (outstring vector.StringV
 	out.Push(fmt.Sprintf("%d", config.bands))
 	for trackname, track := range tracks {
 		out.Push(fmt.Sprintf("|%s|%d|", trackname, track.info.beats))
-		for _, beat := range track.beats {
-			for _, band := range beat.frames {
+		for be, beat := range track.beats {
+			for ba, band := range beat.frames {
+				if track.info.beats <= 4 {
+					fmt.Fprintf(os.Stderr, "%d %d %f %f\n", be, ba, band.left, band.right)
+				}
 				var l uint64 = math.Float64bits(band.left)
 				var r uint64 = math.Float64bits(band.right)
-				out.Push(fmt.Sprintf("%s", [16]byte{byte(l >> 56), byte(l >> 48), byte(l >> 40), byte(l >> 32), byte(l >> 24), byte(l >> 16), byte(l >> 8), byte(l), byte(r >> 56), byte(r >> 48), byte(r >> 40), byte(r >> 32), byte(r >> 24), byte(r >> 16), byte(r >> 8), byte(r)}))
+				var sw StringWriter
+				binary.Write(&sw, binary.BigEndian, l)
+				out.Push(*sw.out)
+				binary.Write(&sw, binary.BigEndian, r)
+				out.Push(*sw.out)
 			}
 		}
 	}
