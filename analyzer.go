@@ -100,20 +100,27 @@ func openband(config *config, remixspec *vector.StringVector, filename string, b
 	datachan = make(chan frame)
 	quitchan = make(chan bool)
 	go func() {
-		buf := make([]byte, 4)
 		for {
-			size, err := p.Stdout.Read(buf)
+			frame := new(frame)
+			var tmp int16
+			err := binary.Read(p.Stdout, binary.BigEndian, &tmp)
 			if err != nil {
-				if size == 0 && err == os.EOF {
-					break
+				if err != os.EOF {
+					panic(err)
 				} else {
-					panic(fmt.Sprintf("error reading from sox! %s", err))
+					break
 				}
 			}
-
-			frame := new(frame)
-			frame.left = float64(buf[0])*256 + float64(buf[1])
-			frame.right = float64(buf[2])*256 + float64(buf[1])
+			frame.left += float64(tmp)
+			err = binary.Read(p.Stdout, binary.BigEndian, &tmp)
+			if err != nil {
+				if err != os.EOF {
+					panic(err)
+				} else {
+					break 
+				}
+			}
+			frame.right += float64(tmp)
 			datachan <- *frame
 		}
 		fmt.Fprintln(os.Stderr, "Done reading file")
@@ -251,13 +258,13 @@ func (config *config) writeoutput() {
 				case f := <-datachan:
 					dex := i / info.beatlength
 					if i%10000 == 0 {
-						fmt.Fprintf(os.Stderr, "%f %f\n", trackdata.beats[dex].frames[band].left, trackdata.beats[dex].frames[band].right)
+						fmt.Fprintf(os.Stderr, "%d %f %f\n", i, trackdata.beats[dex].frames[band].left, trackdata.beats[dex].frames[band].right)
 					}
 					if dex >= uint(len(trackdata.beats)) {
 						dex = uint(len(trackdata.beats)) - 1
 						fmt.Fprintln(os.Stderr, "overflow!")
 					}
-					trackdata.beats[dex].frames[band].left += math.Fabs(float64(f.left))
+					trackdata.beats[dex].frames[band].left += math.Fabs(f.left)
 					trackdata.beats[dex].frames[band].right += math.Fabs(float64(f.right))
 				case b := <-quitchan:
 					fmt.Fprintf(os.Stderr, "got quitchan msg %t\n", b)
@@ -266,6 +273,13 @@ func (config *config) writeoutput() {
 				i++
 			}
 		}
+/*		for beatno, _ := range trackdata.beats {
+			for bandno, _ := range trackdata.beats[beatno].frames {
+				trackdata.beats[beatno].frames[bandno].left = math.Sqrt(trackdata.beats[beatno].frames[bandno].left / float64(info.beatlength))
+				trackdata.beats[beatno].frames[bandno].right = math.Sqrt(trackdata.beats[beatno].frames[bandno].right / float64(info.beatlength))
+			}
+		}*/
+		
 		tracks[filename] = trackdata
 	}
 
@@ -293,11 +307,15 @@ func (config *config) marshal(tracks map[string]track) (outstring vector.StringV
 	out.Push(fmt.Sprintf("%d", config.bands))
 	for trackname, track := range tracks {
 		out.Push(fmt.Sprintf("|%s|%d|", trackname, track.info.beats))
-		for be, beat := range track.beats {
-			for ba, band := range beat.frames {
-				if track.info.beats <= 4 {
-					fmt.Fprintf(os.Stderr, "%d %d %f %f\n", be, ba, band.left, band.right)
+		if track.info.beats <= 128 {
+			for i := uint(0); i < config.bands; i += 1 {
+				for j := uint(0); j < track.info.beats; j += 1 {
+					fmt.Fprintf(os.Stderr, "%d %d %f %f\n", i, j, track.beats[j].frames[i].left, track.beats[j].frames[i].right)
 				}
+			}
+		}
+		for _, beat := range track.beats {
+			for _, band := range beat.frames {
 				var l uint64 = math.Float64bits(band.left)
 				var r uint64 = math.Float64bits(band.right)
 				var sw StringWriter

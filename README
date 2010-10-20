@@ -27,4 +27,11 @@ MAYBE work on audio files
 
 something else will consume them. file based stuff in go.
 
-sc class to read json file and present X outputs of bands
+sc class to read json file and present X outputs of bands √
+
+now i guess i need to create code to:
+a.) allocate bands * (max beats * 2) 2-channel buffers in two sets: active and filling. set this number in server options and reboot server at start.
+b.) create one synthdef to play all set of active buffers (for a band?) in order
+c.) another to read input and fill buffers
+d.) poll to see if buffers are full. I guess I can use a bufrd for this or will i need a custom ugen?
+e.) when filling buffers are full, switch targets of synths, clear formerly active buffers and start filling with randomly selected new input track
