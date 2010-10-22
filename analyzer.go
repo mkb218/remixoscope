@@ -262,7 +262,9 @@ func (config *config) writeoutput() {
 					}
 					if dex >= uint(len(trackdata.beats)) {
 						dex = uint(len(trackdata.beats)) - 1
-						fmt.Fprintln(os.Stderr, "overflow!")
+						// rolloff
+						f.left = f.left * float64(dex / uint(len(trackdata.beats)))
+						f.right = f.right * float64(dex / uint(len(trackdata.beats)))
 					}
 					trackdata.beats[dex].frames[band].left += math.Fabs(f.left)
 					trackdata.beats[dex].frames[band].right += math.Fabs(float64(f.right))
