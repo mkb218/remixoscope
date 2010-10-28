@@ -35,3 +35,4 @@ b.) create one synthdef to play all set of active buffers (for a band?) in order
 c.) another to read input and fill buffers
 d.) poll to see if buffers are full. I guess I can use a bufrd for this or will i need a custom ugen?
 e.) when filling buffers are full, switch targets of synths, clear formerly active buffers and start filling with randomly selected new input track
+

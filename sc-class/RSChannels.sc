@@ -14,16 +14,17 @@ BeatInfo {
 }
 
 RSChannels {
-	var <channels, <beatcount, <filename;
+	var <channels, <bandcount, <filename, ready, bufArray;
 	*newWithFilename { 
 		arg f;
-		^super.newCopyArgs(nil, nil, f);
+		^super.newCopyArgs(nil, nil, f, false);
 	}
 	
 	read {
+		if (this.ready, { ^this } );
 		try {
 			var file = File.open(this.filename, "rb");
-			var nextChar, beats, done, bandcount;
+			var nextChar, beats, done, beatcount;
 			channels = Dictionary.new;
 			"file open".postln;
 			if ( file.isOpen != true, { Error("couldn't open file" + filename + "!").throw } );
@@ -60,5 +61,25 @@ RSChannels {
 		} {|error|
 			error.throw
 		};
+		ready = true;
 	}
+	
+	setupServer {
+		|server, bufs, frames, chans|
+		if (server.options.numBuffers() < bufs, {server.options.numBuffers_(bufs); server.quit; server.boot});
+		bufArray = Buffer.allocConsecutive(bufs, server, frames, chans);
+	}
+		
+	mkSynthDef {
+		arg server, name;
+		var maxbeats, bufsPerSet; // init
+		if (ready == false,{this.read});
+		maxbeats = 0;
+		channels.keysValuesDo({|key, item|
+			if (item.size > maxbeats, {maxbeats = item.size});
+		});
+		bufsPerSet = bandcount * maxbeats;
+		setupServer(server, bufsPerSet);
+//		SynthDef(name, { 
+	}	
 }
