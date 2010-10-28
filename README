@@ -36,3 +36,4 @@ c.) another to read input and fill buffers
 d.) poll to see if buffers are full. I guess I can use a bufrd for this or will i need a custom ugen?
 e.) when filling buffers are full, switch targets of synths, clear formerly active buffers and start filling with randomly selected new input track
 
+i think i need to schedule the play and record actions from sclang.
