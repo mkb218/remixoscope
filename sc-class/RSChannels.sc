@@ -14,10 +14,10 @@ BeatInfo {
 }
 
 RSChannels {
-	var <channels, <bandcount, <filename, ready, bufArray;
+	var <channels, <bandcount, <filename, ready, bufArray, synth, <>bps;
 	*newWithFilename { 
 		arg f;
-		^super.newCopyArgs(nil, nil, f, false);
+		^super.newCopyArgs(nil, nil, f, false, nil, nil, 64.0);
 	}
 	
 	read {
@@ -63,23 +63,33 @@ RSChannels {
 		};
 		ready = true;
 	}
-	
-	setupServer {
-		|server, bufs, frames, chans|
-		if (server.options.numBuffers() < bufs, {server.options.numBuffers_(bufs); server.quit; server.boot});
-		bufArray = Buffer.allocConsecutive(bufs, server, frames, chans);
-	}
-		
-	mkSynthDef {
+
+	prepare {
 		arg server, name;
-		var maxbeats, bufsPerSet; // init
+		var maxbeats, bufsPerSet, t, recorderInput; // init
 		if (ready == false,{this.read});
 		maxbeats = 0;
 		channels.keysValuesDo({|key, item|
 			if (item.size > maxbeats, {maxbeats = item.size});
 		});
 		bufsPerSet = bandcount * maxbeats;
-		setupServer(server, bufsPerSet);
-//		SynthDef(name, { 
+		if (server.options.numBuffers() < (bufsPerSet * 4), {server.options.numBuffers_(bufsPerSet * 4); server.quit; server.boot});
+		// min / beat * 60 s / min * 44100 frames / sec
+		bufArray = Buffer.allocConsecutive(bufsPerSet * 2, server, 1.0 * 44100.0 / bps, 2);
+		
+		// set up recorders
+		// choose an input to record
+		recorderInput = channels.asSortedArray.choose;
+		SynthDef(\RSChannelsRecord, { |offset| Mix.fill( bandcount, { | i | RecordBuf.ar(BPF.ar(In.ar(0,2), (22050.0/bandcount)*(i+0.5), (1.0*i/bandcount)), offset+i, 0, 1.0, 1.0, doneAction:2)})}).load(server);
+		
+		// set up players
+		SynthDef(\RSChannelsPlay, { |offset| Mix.fill( bandcount, { | i | PlayBuf.ar(2, offset+i, BufRateScale.kr(offset+1), doneAction:2)})}).load(server);
+		// schedule new synth to play every beat increasing offset
+		t = TempoClock(bps);
+//		t.sched(1.0, {
+//			Synth(\RSChannels, 
 	}	
+
+	destroy {
+	}
 }
