@@ -37,3 +37,5 @@ d.) poll to see if buffers are full. I guess I can use a bufrd for this or will 
 e.) when filling buffers are full, switch targets of synths, clear formerly active buffers and start filling with randomly selected new input track
 
 i think i need to schedule the play and record actions from sclang.
+
+a thought: instead of scheduling new synth creation on every beat, have a doneAction of 0 and modulate the buffer number? same with playbufs
