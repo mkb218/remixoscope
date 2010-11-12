@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 );
-type soxsample int32
+type Soxsample int32
 type frame struct {
 	left, right float64
 }

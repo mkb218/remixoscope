@@ -4,13 +4,17 @@ all: analyzer producer
 
 include $(GOROOT)/src/Make.common
 
-analyzer: remixoscope.$O analyzer.$O
-	$(LD) -o analyzer remixoscope.$O analyzer.$O
+analyzer: remixoscope.a analyzer.$O
+	$(LD) -L . -o analyzer analyzer.$O
 
-producer: remixoscope.$O producer.$O
-	$(LD) -o producer remixoscope.$O analyzer.$O
+producer: remixoscope.a producer.$O
+	$(LD) -L . -o producer producer.$O
+
+remixoscope.a: remixoscope.$O
+	gopack grc $@ $<
 
 %.$O: %.go
-	$(GC) $<
+	$(GC) -I . $<
 	
 
+CLEANFILES+=analyzer producer
