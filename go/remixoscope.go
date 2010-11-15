@@ -4,6 +4,14 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"math"
+	binary "encoding/binary"
+	"exec"
+	"regexp"
+	"strings"
+	"strconv"
+	"bytes"
+	ioutil "io/ioutil"
 );
 type Soxsample int32
 type Frame struct {
@@ -11,7 +19,7 @@ type Frame struct {
 }
 
 type Beat struct {
-	Frames []frame // one frame per band
+	Frames []Frame // one frame per band
 }
 type Track struct {
 	Beats []Beat
@@ -23,7 +31,7 @@ type Config struct {
 	Bands     uint
 	Sox       string
 	Soxopts   []string
-	Sutput    *bufio.Writer
+	Output    *bufio.Writer
 }
 
 type Input struct {
@@ -42,24 +50,24 @@ func (this *StringWriter) Write(p []byte) (n int, err os.Error) {
 	return len(tmp), nil
 }
 
-func (config *config) marshal(tracks map[string]track) (outstring []string) {
-	// <bandcount>|trackname|beat0band0lbeat0band0r...beat0bandNr
+func (config *Config) marshal(tracks map[string]Track) (outstring []string) {
+	// <bandcount>|trackname|beat0band0lbeat0band0r...Beat0bandNr
 	// numbers aren't intended to be human readable, but it is easier to emit human readable integers
 	out := make([]string, 0)
-	out = append(out, fmt.Sprintf("%d", config.bands))
+	out = append(out, fmt.Sprintf("%d", config.Bands))
 	for trackname, track := range tracks {
-		out = append(out, fmt.Sprintf("|%s|%d|", trackname, track.info.beats))
-		if track.info.beats <= 128 {
-			for i := uint(0); i < config.bands; i += 1 {
-				for j := uint(0); j < track.info.beats; j += 1 {
-					fmt.Fprintf(os.Stderr, "%d %d %f %f\n", i, j, track.beats[j].frames[i].left, track.beats[j].frames[i].right)
+		out = append(out, fmt.Sprintf("|%s|%d|", trackname, track.Info.Beats))
+		if track.Info.Beats <= 128 {
+			for i := uint(0); i < config.Bands; i += 1 {
+				for j := uint(0); j < track.Info.Beats; j += 1 {
+					fmt.Fprintf(os.Stderr, "%d %d %f %f\n", i, j, track.Beats[j].Frames[i].Left, track.Beats[j].Frames[i].Right)
 				}
 			}
 		}
-		for _, beat := range track.beats {
-			for _, band := range beat.frames {
-				var l uint64 = math.Float64bits(band.left)
-				var r uint64 = math.Float64bits(band.right)
+		for _, beat := range track.Beats {
+			for _, band := range beat.Frames {
+				var l uint64 = math.Float64bits(band.Left)
+				var r uint64 = math.Float64bits(band.Right)
 				var sw StringWriter
 				binary.Write(&sw, binary.BigEndian, l)
 				out = append(out, *sw.out)
@@ -71,9 +79,9 @@ func (config *config) marshal(tracks map[string]track) (outstring []string) {
 	return out
 }
 
-func (config *config) getfileinfo(filename string) (samplelength uint, channels uint) {
+func (config *Config) getfileinfo(filename string) (samplelength uint, channels uint) {
 	getwd, _ := os.Getwd()
-	p, err := exec.Run(config.sox, []string{"soxi", filename}, os.Environ(), getwd, exec.DevNull, exec.Pipe, exec.Pipe)
+	p, err := exec.Run(config.Sox, []string{"soxi", filename}, os.Environ(), getwd, exec.DevNull, exec.Pipe, exec.Pipe)
 	if err != nil {
 		panic(fmt.Sprintf("couldn't open soxi on file %s! %s", filename, err))
 	}
@@ -120,12 +128,12 @@ func (config *config) getfileinfo(filename string) (samplelength uint, channels 
 // for each band
 // channels[i] = openband(file, i, width)
 
-func (config *config) readinputlist() map[string]input {
+func (config *Config) readinputlist() map[string]Input {
 	in := false
-	tracks := make(map[string]input)
+	tracks := make(map[string]Input)
 	var filename string
-	var info input
-	b, err := ioutil.ReadFile(config.inputlist)
+	var info Input
+	b, err := ioutil.ReadFile(config.Inputlist)
 	filestuff := bytes.NewBuffer(b).String()
 	if err != nil {
 		panic(fmt.Sprintf("error reading inputlist %s\n", err))
@@ -140,13 +148,13 @@ func (config *config) readinputlist() map[string]input {
 			tracks[filename] = info
 		} else if strings.HasPrefix(line, "LENGTH ") {
 			lengthstr := (strings.Split(line, " ", 2))[1]
-			info.beats, err = strconv.Atoui(lengthstr)
+			info.Beats, err = strconv.Atoui(lengthstr)
 			if err != nil {
 				panic(fmt.Sprintf("bad int in inputlist length %s: %s", lengthstr, err))
 			}
 			var samplelength uint
-			samplelength, info.channels = config.getfileinfo(filename)
-			info.beatlength = samplelength / info.beats
+			samplelength, info.Channels = config.getfileinfo(filename)
+			info.Beatlength = samplelength / info.Beats
 		}
 	}
 	if in {
@@ -155,61 +163,61 @@ func (config *config) readinputlist() map[string]input {
 	return tracks
 }
 
-func (config *config) Writeanalysis() {
+func (config *Config) Writeanalysis() {
 	t := config.readinputlist()
-	tracks := make(map[string]track)
+	tracks := make(map[string]Track)
 	for filename, info := range t {
 		fmt.Fprintf(os.Stderr, "starting file %s\n", filename)
 		remixspec := make([]string, 0)
-		if info.channels == 1 {
-			remixspec = append(remixspec, []string{"remix", "1", "1"})
+		if info.Channels == 1 {
+			remixspec = append(remixspec, []string{"remix", "1", "1"}...)
 			// stereo is a noop
 			// everything >2 channels doesn't have enough information so I am assuming the layout based on mpeg standards
-		} else if info.channels == 3 {
-			remixspec = append(remixspec, []string{"remix", "1,3", "2,3"})
-		} else if info.channels == 4 {
-			remixspec = append(remixspec, []string{"remix", "1,3,4", "2,3,4"})
-		} else if info.channels == 5 {
-			remixspec = append(remixspec, []string{"remix", "1,3,4", "2,3,5"})
-		} else if info.channels == 6 { // 5.1
-			remixspec = append(remixspec, []string{"remix", "1,3,4,5", "2,3,4,6"})
-		} else if info.channels == 7 { // 6.1
-			remixspec = append(remixspec, []string{"remix", "1,3,4,5,7", "2,3,4,6,7"})
-		} else if info.channels == 8 { // 7.1
-			remixspec = append(remixspec, []string{"remix", "1,3,4,5,7", "2,3,4,6,8"})
-		} else if info.channels > 8 { // no idea, just take first two
-			remixspec = append(remixspec, []string{"remix", "1", "2"})
+		} else if info.Channels == 3 {
+			remixspec = append(remixspec, []string{"remix", "1,3", "2,3"}...)
+		} else if info.Channels == 4 {
+			remixspec = append(remixspec, []string{"remix", "1,3,4", "2,3,4"}...)
+		} else if info.Channels == 5 {
+			remixspec = append(remixspec, []string{"remix", "1,3,4", "2,3,5"}...)
+		} else if info.Channels == 6 { // 5.1
+			remixspec = append(remixspec, []string{"remix", "1,3,4,5", "2,3,4,6"}...)
+		} else if info.Channels == 7 { // 6.1
+			remixspec = append(remixspec, []string{"remix", "1,3,4,5,7", "2,3,4,6,7"}...)
+		} else if info.Channels == 8 { // 7.1
+			remixspec = append(remixspec, []string{"remix", "1,3,4,5,7", "2,3,4,6,8"}...)
+		} else if info.Channels > 8 { // no idea, just take first two
+			remixspec = append(remixspec, []string{"remix", "1", "2"}...)
 		}
 
 		//		tracks = tracks[:1+len(tracks)]
 		// loop over bands
-		var trackdata track
-		trackdata.beats = make([]beat, info.beats)
-		trackdata.info = &info
-		for index := uint(0); index < info.beats; index++ {
-			trackdata.beats[index].frames = make([]frame, config.bands)
+		var trackdata Track
+		trackdata.Beats = make([]Beat, info.Beats)
+		trackdata.Info = &info
+		for index := uint(0); index < info.Beats; index++ {
+			trackdata.Beats[index].Frames = make([]Frame, config.Bands)
 		}
-		for band := uint(0); band < config.bands; band++ {
+		for band := uint(0); band < config.Bands; band++ {
 			var i uint = 0
-			datachan, quitchan := openband(config, &remixspec, filename, band)
+			datachan, quitchan := config.openband(remixspec, filename, band)
 			fmt.Fprint(os.Stderr, "got channels\n")
-			fmt.Fprintf(os.Stderr, "beatlength %d, band %d / %d, beats %d\n", info.beatlength, band, config.bands, info.beats)
+			fmt.Fprintf(os.Stderr, "beatlength %d, band %d / %d, beats %d\n", info.Beatlength, band, config.Bands, info.Beats)
 		L:
 			for {
 				select {
 				case f := <-datachan:
-					dex := i / info.beatlength
+					dex := i / info.Beatlength
 					if i%10000 == 0 {
-						fmt.Fprintf(os.Stderr, "%d %f %f\n", i, trackdata.beats[dex].frames[band].left, trackdata.beats[dex].frames[band].right)
+						fmt.Fprintf(os.Stderr, "%d %f %f\n", i, trackdata.Beats[dex].Frames[band].Left, trackdata.Beats[dex].Frames[band].Right)
 					}
-					if dex >= uint(len(trackdata.beats)) {
-						dex = uint(len(trackdata.beats)) - 1
+					if dex >= uint(len(trackdata.Beats)) {
+						dex = uint(len(trackdata.Beats)) - 1
 						// rolloff
-						f.left = f.left * float64(dex / uint(len(trackdata.beats)))
-						f.right = f.right * float64(dex / uint(len(trackdata.beats)))
+						f.Left = f.Left * float64(dex / uint(len(trackdata.Beats)))
+						f.Right = f.Right * float64(dex / uint(len(trackdata.Beats)))
 					}
-					trackdata.beats[dex].frames[band].left += math.Fabs(f.left)
-					trackdata.beats[dex].frames[band].right += math.Fabs(float64(f.right))
+					trackdata.Beats[dex].Frames[band].Left += math.Fabs(f.Left)
+					trackdata.Beats[dex].Frames[band].Right += math.Fabs(float64(f.Right))
 				case b := <-quitchan:
 					fmt.Fprintf(os.Stderr, "got quitchan msg %t\n", b)
 					break L
@@ -217,10 +225,10 @@ func (config *config) Writeanalysis() {
 				i++
 			}
 		}
-/*		for beatno, _ := range trackdata.beats {
-			for bandno, _ := range trackdata.beats[beatno].frames {
-				trackdata.beats[beatno].frames[bandno].left = math.Sqrt(trackdata.beats[beatno].frames[bandno].left / float64(info.beatlength))
-				trackdata.beats[beatno].frames[bandno].right = math.Sqrt(trackdata.beats[beatno].frames[bandno].right / float64(info.beatlength))
+/*		for beatno, _ := range trackdata.Beats {
+			for bandno, _ := range trackdata.Beats[beatno].Frames {
+				trackdata.Beats[beatno].Frames[bandno].Left = math.Sqrt(trackdata.Beats[beatno].Frames[bandno].Left / float64(info.Beatlength))
+				trackdata.Beats[beatno].Frames[bandno].Right = math.Sqrt(trackdata.Beats[beatno].Frames[bandno].Right / float64(info.Beatlength))
 			}
 		}*/
 		
@@ -231,30 +239,30 @@ func (config *config) Writeanalysis() {
 
 	fmt.Fprintf(os.Stderr, "%d\n", len(outbytes))
 
-	outbytes.Do(func(elem string) {
-		written, err := config.output.WriteString(elem)
+	for _, elem := range outbytes {
+		written, err := config.Output.WriteString(elem)
 
 		if err != nil {
 			panic(fmt.Sprintf("error writing bytes. written %d err %s\n", written, err))
 		}
-	})
-	err := config.output.Flush()
+	}
+	err := config.Output.Flush()
 	if err != nil {
 		panic(fmt.Sprintf("flushing output failed! %s", err))
 	}
 }
 
-func (config *Config) openband(remixspec []string, filename string, band uint) (datachan chan frame, quitchan chan bool) {
-	bandwidth := 22050 / config.bands
+func (config *Config) openband(remixspec []string, filename string, band uint) (datachan chan Frame, quitchan chan bool) {
+	bandwidth := 22050 / config.Bands
 	bandlow := band * bandwidth
 	bandhigh := bandlow + bandwidth
 
 	currsoxopts := make([]string, 0)
 	currsoxopts = append(currsoxopts, "sox")
 	currsoxopts = append(currsoxopts, filename)
-	currsoxopts = append(currsoxopts, config.soxopts)
+	currsoxopts = append(currsoxopts, config.Soxopts...)
 	currsoxopts = append(currsoxopts, "-")
-	currsoxopts = append(currsoxopts, remixspec)
+	currsoxopts = append(currsoxopts, remixspec...)
 	currsoxopts = append(currsoxopts, "sinc")
 
 	if bandhigh >= 22050 {
@@ -263,21 +271,21 @@ func (config *Config) openband(remixspec []string, filename string, band uint) (
 		currsoxopts = append(currsoxopts, strconv.Uitoa(bandlow) + "-" + strconv.Uitoa(bandhigh))
 	}
 
-	currsoxopts = append(currsoxopts, []string{"channels", "2"})
+	currsoxopts = append(currsoxopts, []string{"channels", "2"}...)
 
 	getwd, _ := os.Getwd()
 	fmt.Fprintln(os.Stderr, strings.Join(currsoxopts, " "))
-	p, err := exec.Run(config.sox, currsoxopts, os.Environ(), getwd, exec.DevNull, exec.Pipe, exec.PassThrough)
+	p, err := exec.Run(config.Sox, currsoxopts, os.Environ(), getwd, exec.DevNull, exec.Pipe, exec.PassThrough)
 	if err != nil {
 		panic(fmt.Sprintf("couldn't open band %d for reason %s", band, err))
 	}
 	fmt.Fprintf(os.Stderr, "sox pid is %d\n", p.Pid)
 	// some day this will use libsox
-	datachan = make(chan frame)
+	datachan = make(chan Frame)
 	quitchan = make(chan bool)
 	go func() {
 		for {
-			frame := new(frame)
+			frame := new(Frame)
 			var tmp int16
 			err := binary.Read(p.Stdout, binary.BigEndian, &tmp)
 			if err != nil {
@@ -287,7 +295,7 @@ func (config *Config) openband(remixspec []string, filename string, band uint) (
 					break
 				}
 			}
-			frame.left += float64(tmp)
+			frame.Left += float64(tmp)
 			err = binary.Read(p.Stdout, binary.BigEndian, &tmp)
 			if err != nil {
 				if err != os.EOF {
@@ -296,7 +304,7 @@ func (config *Config) openband(remixspec []string, filename string, band uint) (
 					break 
 				}
 			}
-			frame.right += float64(tmp)
+			frame.Right += float64(tmp)
 			datachan <- *frame
 		}
 		fmt.Fprintln(os.Stderr, "Done reading file")

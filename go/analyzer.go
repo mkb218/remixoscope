@@ -3,19 +3,12 @@ package main
 //#include "sox.h"
 
 import (
-	"strings"
-	"strconv"
 	"flag"
 	"fmt"
 	"os"
 	"exec"
-	"bytes"
-	"regexp"
-	"math"
 	"bufio"
 	"remixoscope"
-	binary "encoding/binary"
-	ioutil "io/ioutil"
 )
 
 // assume we want stereo, 16-bit output. sample rate is adjustable
@@ -23,35 +16,35 @@ import (
 
 var filetoclose *os.File = nil
 
-func readflags(config *config) {
-	flag.StringVar(&config.inputlist, "inputlist", "inputlist", "list of input files with metadata")
-	flag.UintVar(&config.bands, "bands", 10, "number of bands")
+func readflags(config *remixoscope.Config) {
+	flag.StringVar(&config.Inputlist, "inputlist", "inputlist", "list of input files with metadata")
+	flag.UintVar(&config.Bands, "bands", 10, "number of bands")
 	soxpath, _ := exec.LookPath("sox")
-	flag.StringVar(&config.sox, "sox", soxpath, "Path to sox binary. Default is /usr/bin/sox")
+	flag.StringVar(&config.Sox, "sox", soxpath, "Path to sox binary. Default is /usr/bin/sox")
 	o := flag.String("output", "-", "output file. Use \"-\" for stdout.")
 	flag.Parse()
 	if *o == "-" {
-		config.output = bufio.NewWriter(os.Stdout)
+		config.Output = bufio.NewWriter(os.Stdout)
 	} else {
 		f, err := os.Open(*o, os.O_CREAT|os.O_WRONLY|os.O_TRUNC, 0666)
 		if err != nil {
 			panic(fmt.Sprintf("couldn't open file %s for output! error %s", *o, err.String()))
 		}
 		fmt.Fprintf(os.Stderr, "File open, descriptor is %d\n", f.Fd())
-		config.output = bufio.NewWriter(f)
+		config.Output = bufio.NewWriter(f)
 		filetoclose = f
 	}
 
-	config.Soxopts = make([], 0)
+	config.Soxopts = make([]string, 0)
 	if flag.NArg() > 0 {
-		config.Soxopts = append(config.Soxopts, flag.Args())
+		config.Soxopts = append(config.Soxopts, flag.Args()...)
 	} else {
-		config.Soxopts = append(config.Soxopts, []string{"-b", "16", "-e", "signed-integer", "-B", "-r", "44100", "-t", "raw"})
+		config.Soxopts = append(config.Soxopts, []string{"-b", "16", "-e", "signed-integer", "-B", "-r", "44100", "-t", "raw"}...)
 	}
 }
 
 func main() {
-	config := new(config)
+	config := new(remixoscope.Config)
 	readflags(config)
 	config.Writeanalysis()
 	if filetoclose != nil {
