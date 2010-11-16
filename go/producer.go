@@ -85,6 +85,10 @@ func inputMapFromOutput(filename string) (bandcount uint, inputs *map[string]sou
 	return bandcount, inputs
 }
 
+func openband(band uint) chan frame {
+	return make(chan frame)
+}
+
 func main() {
 	var f remixoscope.Soxsample = 4
 	fmt.Printf("%d\n", f)
