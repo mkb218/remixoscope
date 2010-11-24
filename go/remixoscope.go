@@ -15,11 +15,15 @@ import (
 );
 type Soxsample int32
 type Frame struct {
+	Left, Right int16
+}
+
+type Bucket struct {
 	Left, Right float64
 }
 
 type Beat struct {
-	Frames []Frame // one frame per band
+	Buckets []Bucket // one frame per band
 }
 type Track struct {
 	Beats []Beat
@@ -60,12 +64,12 @@ func (config *Config) marshal(tracks map[string]Track) (outstring []string) {
 		if track.Info.Beats <= 128 {
 			for i := uint(0); i < config.Bands; i += 1 {
 				for j := uint(0); j < track.Info.Beats; j += 1 {
-					fmt.Fprintf(os.Stderr, "%d %d %f %f\n", i, j, track.Beats[j].Frames[i].Left, track.Beats[j].Frames[i].Right)
+					fmt.Fprintf(os.Stderr, "%d %d %f %f\n", i, j, track.Beats[j].Buckets[i].Left, track.Beats[j].Buckets[i].Right)
 				}
 			}
 		}
 		for _, beat := range track.Beats {
-			for _, band := range beat.Frames {
+			for _, band := range beat.Buckets {
 				var l uint64 = math.Float64bits(band.Left)
 				var r uint64 = math.Float64bits(band.Right)
 				var sw StringWriter
@@ -79,9 +83,9 @@ func (config *Config) marshal(tracks map[string]Track) (outstring []string) {
 	return out
 }
 
-func (config *Config) getfileinfo(filename string) (samplelength uint, channels uint) {
+func getfileinfo(sox, filename string) (samplelength uint, channels uint) {
 	getwd, _ := os.Getwd()
-	p, err := exec.Run(config.Sox, []string{"soxi", filename}, os.Environ(), getwd, exec.DevNull, exec.Pipe, exec.Pipe)
+	p, err := exec.Run(sox, []string{"soxi", filename}, os.Environ(), getwd, exec.DevNull, exec.Pipe, exec.Pipe)
 	if err != nil {
 		panic(fmt.Sprintf("couldn't open soxi on file %s! %s", filename, err))
 	}
@@ -195,7 +199,7 @@ func (config *Config) Writeanalysis() {
 		trackdata.Beats = make([]Beat, info.Beats)
 		trackdata.Info = &info
 		for index := uint(0); index < info.Beats; index++ {
-			trackdata.Beats[index].Frames = make([]Frame, config.Bands)
+			trackdata.Beats[index].Buckets = make([]Bucket, config.Bands)
 		}
 		for band := uint(0); band < config.Bands; band++ {
 			var i uint = 0
@@ -206,18 +210,19 @@ func (config *Config) Writeanalysis() {
 			for {
 				select {
 				case f := <-datachan:
+					b := Bucket{float64(f.Left), float64(f.Right)}
 					dex := i / info.Beatlength
 					if i%10000 == 0 {
-						fmt.Fprintf(os.Stderr, "%d %f %f\n", i, trackdata.Beats[dex].Frames[band].Left, trackdata.Beats[dex].Frames[band].Right)
+						fmt.Fprintf(os.Stderr, "%d %f %f\n", i, trackdata.Beats[dex].Buckets[band].Left, trackdata.Beats[dex].Buckets[band].Right)
 					}
 					if dex >= uint(len(trackdata.Beats)) {
 						dex = uint(len(trackdata.Beats)) - 1
 						// rolloff
-						f.Left = f.Left * float64(dex / uint(len(trackdata.Beats)))
-						f.Right = f.Right * float64(dex / uint(len(trackdata.Beats)))
+						b.Left = b.Left * float64(dex / uint(len(trackdata.Beats)))
+						b.Right = b.Right * float64(dex / uint(len(trackdata.Beats)))
 					}
-					trackdata.Beats[dex].Frames[band].Left += math.Fabs(f.Left)
-					trackdata.Beats[dex].Frames[band].Right += math.Fabs(float64(f.Right))
+					trackdata.Beats[dex].Buckets[band].Left += math.Fabs(b.Left)
+					trackdata.Beats[dex].Buckets[band].Right += math.Fabs(b.Right)
 				case b := <-quitchan:
 					fmt.Fprintf(os.Stderr, "got quitchan msg %t\n", b)
 					break L
@@ -226,9 +231,9 @@ func (config *Config) Writeanalysis() {
 			}
 		}
 /*		for beatno, _ := range trackdata.Beats {
-			for bandno, _ := range trackdata.Beats[beatno].Frames {
-				trackdata.Beats[beatno].Frames[bandno].Left = math.Sqrt(trackdata.Beats[beatno].Frames[bandno].Left / float64(info.Beatlength))
-				trackdata.Beats[beatno].Frames[bandno].Right = math.Sqrt(trackdata.Beats[beatno].Frames[bandno].Right / float64(info.Beatlength))
+			for bandno, _ := range trackdata.Beats[beatno].Buckets {
+				trackdata.Beats[beatno].Buckets[bandno].Left = math.Sqrt(trackdata.Beats[beatno].Buckets[bandno].Left / float64(info.Beatlength))
+				trackdata.Beats[beatno].Buckets[bandno].Right = math.Sqrt(trackdata.Beats[beatno].Buckets[bandno].Right / float64(info.Beatlength))
 			}
 		}*/
 		
@@ -273,11 +278,15 @@ func (config *Config) openband(remixspec []string, filename string, band uint) (
 
 	currsoxopts = append(currsoxopts, []string{"channels", "2"}...)
 
-	getwd, _ := os.Getwd()
 	fmt.Fprintln(os.Stderr, strings.Join(currsoxopts, " "))
-	p, err := exec.Run(config.Sox, currsoxopts, os.Environ(), getwd, exec.DevNull, exec.Pipe, exec.PassThrough)
+	return Startsox(config.Sox, currsoxopts)
+}
+
+func Startsox(sox string, currsoxopts []string) (datachan chan Frame, quitchan chan bool) {
+	getwd, _ := os.Getwd()
+	p, err := exec.Run(sox, currsoxopts, os.Environ(), getwd, exec.DevNull, exec.Pipe, exec.PassThrough)
 	if err != nil {
-		panic(fmt.Sprintf("couldn't open band %d for reason %s", band, err))
+		panic(fmt.Sprintf("couldn't open band for reason %s", err))
 	}
 	fmt.Fprintf(os.Stderr, "sox pid is %d\n", p.Pid)
 	// some day this will use libsox
@@ -286,8 +295,7 @@ func (config *Config) openband(remixspec []string, filename string, band uint) (
 	go func() {
 		for {
 			frame := new(Frame)
-			var tmp int16
-			err := binary.Read(p.Stdout, binary.BigEndian, &tmp)
+			err := binary.Read(p.Stdout, binary.BigEndian, &frame.Left)
 			if err != nil {
 				if err != os.EOF {
 					panic(err)
@@ -295,8 +303,7 @@ func (config *Config) openband(remixspec []string, filename string, band uint) (
 					break
 				}
 			}
-			frame.Left += float64(tmp)
-			err = binary.Read(p.Stdout, binary.BigEndian, &tmp)
+			err = binary.Read(p.Stdout, binary.BigEndian, &frame.Right)
 			if err != nil {
 				if err != os.EOF {
 					panic(err)
@@ -304,7 +311,6 @@ func (config *Config) openband(remixspec []string, filename string, band uint) (
 					break 
 				}
 			}
-			frame.Right += float64(tmp)
 			datachan <- *frame
 		}
 		fmt.Fprintln(os.Stderr, "Done reading file")

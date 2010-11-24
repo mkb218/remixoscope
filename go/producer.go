@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	binary "encoding/binary"
+	"flag"
 )
 
 type source struct {
@@ -18,6 +19,11 @@ type source struct {
 
 type ByteArrayReader struct {
 	source []byte
+}
+
+type AudioBuffer struct {
+	left []int16
+	right []int16
 }
 
 func (s *ByteArrayReader) Read(p []byte) (n int, err os.Error) {
@@ -70,14 +76,14 @@ func inputMapFromOutput(filename string) (bandcount uint, inputs *map[string]sou
 		bar := new(ByteArrayReader)
 		bar.source = contents
 		for i := uint(0); i < beatcount; i++ {
-			s.beats = append(s.beats, remixoscope.Beat{make([]remixoscope.Frame, 0)})
+			s.beats = append(s.beats, remixoscope.Beat{make([]remixoscope.Bucket, 0)})
 			for j := uint(0); j < bandcount; j++ {
-				s.beats[i].Frames = append(s.beats[i].Frames, remixoscope.Frame{})
+				s.beats[i].Buckets = append(s.beats[i].Buckets, remixoscope.Bucket{})
 				var out uint64
 				binary.Read(bar, binary.BigEndian, &out)
-				s.beats[i].Frames[j].Left = math.Float64frombits(out)
+				s.beats[i].Buckets[j].Left = math.Float64frombits(out)
 				binary.Read(bar, binary.BigEndian, &out)
-				s.beats[i].Frames[j].Right = math.Float64frombits(out)
+				s.beats[i].Buckets[j].Right = math.Float64frombits(out)
 			}
 		}
 		(*inputs)[infile] = s
@@ -85,11 +91,44 @@ func inputMapFromOutput(filename string) (bandcount uint, inputs *map[string]sou
 	return bandcount, inputs
 }
 
-func openband(band uint) chan frame {
-	return make(chan frame)
+
+func openband(sox string, files []string, length uint, band uint, bands uint) (chan AudioBuffer, chan bool) {
+	datachan := make(chan AudioBuffer)
+	quitchanout := make(chan bool)
+	go func() {
+		for ; len(files) > 0; {
+			filename := files[0]
+			files = files[1:]
+			soxopts := []string{"sox", filename, "-b", "16", "-c", "2", "-e", "signed-integer",  "-B", "-r", "44100", "-t", "raw", "-", "sinc"}
+			bandwidth := 22050 / bands
+			bandlow := band * bandwidth
+			bandhigh := bandlow + bandwidth
+	
+			if bandhigh >= 22050 {
+				soxopts = append(soxopts, strconv.Uitoa(bandlow))
+			} else {
+				soxopts = append(soxopts, strconv.Uitoa(bandlow) + "-" + strconv.Uitoa(bandhigh))
+			}
+
+			rawchan, quitchanin := remixoscope.Startsox(sox, soxopts)
+			for {
+				ab := AudioBuffer{make([]int16, length), make([]int16, length)}
+				for i := uint(0); i < length; i++ {
+					f := <- rawchan
+					ab.left[i] = f.Left
+					ab.right[i] = f.Right
+				}
+				datachan <- ab
+			}
+		}
+	}
+		
+	return datachan, quitchanout
 }
 
 func main() {
-	var f remixoscope.Soxsample = 4
-	fmt.Printf("%d\n", f)
+	output := flag.String("analysis", "analysis", "output of analyzer run")
+	soxpath, _ := exec.LookPath("sox")
+	sox := flag.String("sox", soxpath, "Path to sox binary. Default is to search path")
+	outputfile := flag.String("output", "output.wav", "mixed output")
 }
