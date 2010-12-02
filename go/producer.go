@@ -10,11 +10,13 @@ import (
 	"strings"
 	binary "encoding/binary"
 	"flag"
+	"rand"
+	"syscall"
 )
 
 type source struct {
 	filename string
-	beats []remixoscope.Beat
+	beats    []remixoscope.Beat
 }
 
 type ByteArrayReader struct {
@@ -22,7 +24,7 @@ type ByteArrayReader struct {
 }
 
 type AudioBuffer struct {
-	left []int16
+	left  []int16
 	right []int16
 }
 
@@ -52,7 +54,7 @@ func inputMapFromOutput(filename string) (bandcount uint, inputs *map[string]sou
 	if err != nil {
 		panic(err)
 	}
-	
+
 	b := strings.Index(string(contents), "|")
 	bandcount, err = strconv.Atoui(string(contents[0:strings.Index(string(contents), "|")]))
 	if err != nil {
@@ -61,18 +63,18 @@ func inputMapFromOutput(filename string) (bandcount uint, inputs *map[string]sou
 	contents = contents[b+1:]
 	done := false
 	var s source
-	for ; !done; {
+	for !done {
 		b = strings.Index(string(contents), "|")
 		infile := string(contents[0:b])
 		contents = contents[b+1:]
-		
+
 		b = strings.Index(string(contents), "|")
 		var beatcount uint
 		beatcount, err = strconv.Atoui(string(contents[0:b]))
 		contents = contents[b+1:]
-		
+
 		s.beats = make([]remixoscope.Beat, 0)
-		
+
 		bar := new(ByteArrayReader)
 		bar.source = contents
 		for i := uint(0); i < beatcount; i++ {
@@ -91,44 +93,86 @@ func inputMapFromOutput(filename string) (bandcount uint, inputs *map[string]sou
 	return bandcount, inputs
 }
 
-
 func openband(sox string, files []string, length uint, band uint, bands uint) (chan AudioBuffer, chan bool) {
-	datachan := make(chan AudioBuffer)
+	interchan := make(chan AudioBuffer, 5)
 	quitchanout := make(chan bool)
 	go func() {
-		for ; len(files) > 0; {
-			filename := files[0]
-			files = files[1:]
-			soxopts := []string{"sox", filename, "-b", "16", "-c", "2", "-e", "signed-integer",  "-B", "-r", "44100", "-t", "raw", "-", "sinc"}
-			bandwidth := 22050 / bands
-			bandlow := band * bandwidth
-			bandhigh := bandlow + bandwidth
-	
-			if bandhigh >= 22050 {
-				soxopts = append(soxopts, strconv.Uitoa(bandlow))
-			} else {
-				soxopts = append(soxopts, strconv.Uitoa(bandlow) + "-" + strconv.Uitoa(bandhigh))
+		for i := 0; ; i = (i + 1) % len(files) {
+			filename := files[i]
+			filelength, channels := remixoscope.Getfileinfo(sox, filename)
+
+			rawchan, quitchanin := remixoscope.Openband(sox, channels, filename, band)
+			for !closed(rawchan) {
+				interchan <- rawchan
 			}
 
-			rawchan, quitchanin := remixoscope.Startsox(sox, soxopts)
-			for {
-				ab := AudioBuffer{make([]int16, length), make([]int16, length)}
-				for i := uint(0); i < length; i++ {
-					f := <- rawchan
-					ab.left[i] = f.Left
-					ab.right[i] = f.Right
-				}
-				datachan <- ab
-			}
 		}
-	}
-		
+		close(interchan)
+		close(quitchanout)
+	}()
+
+	go func() {
+		for !closed(interchan) {
+			ab := AudioBuffer{make([]int16, length), make([]int16, length)}
+			for i := uint(0); i < length; i++ {
+				f := <-interchan
+				ab.left[i] = f.Left
+				ab.right[i] = f.Right
+			}
+			datachan <- ab
+		}
+	}()
+
 	return datachan, quitchanout
+}
+
+func shuffle(filenames []string) {
+	sv := StringVector(filenames)
+	for i := len(filenames) - 1; i >= 1; i-- {
+		j := rand.Intn(i)
+		sv.Swap(i, j)
+	}
 }
 
 func main() {
 	output := flag.String("analysis", "analysis", "output of analyzer run")
+	tmpdir := flag.String("tmpdir", "/tmp", "tmpdir")
 	soxpath, _ := exec.LookPath("sox")
 	sox := flag.String("sox", soxpath, "Path to sox binary. Default is to search path")
 	outputfile := flag.String("output", "output.wav", "mixed output")
+	beatlength := flag.Uint("beatlength", 0, "length of each beat in sample frames")
+	flag.Parse()
+	if *beatlength == 0 {
+		fmt.Fprintln(os.Stderr, "Bad beatlength")
+	}
+	bands, loops := inputMapFromOutput(*output)
+
+	for filename, info := range loops {
+		fifos := make([]os.File, bands)
+		for band := 0; band < bands; band++ {
+			fifoname := *tmpdir + "/producer-" + filename[strings.LastIndex(filename, "/")+1:] + strconv.Itoa(band)
+			errno := syscall.Mkfifo(fifoname, uint32(0700))
+			if errno != 0 {
+				panic(os.NewSyscallError("Mkfifo", errno))
+			}
+			datachan, quitchan := openband(*sox, flag.Args(), *beatlength, band, bands)
+			go func() {
+				fifo, err := os.Open(fifoname, os.O_WRONLY, 0)
+				if err != nil {
+					panic(err)
+				}
+				for {
+					var buf AudioBuffer
+					for {
+						ab := <-datachan
+						err = binary.Write(fifo, binary.BigEndian, ab)
+						if err != nil {
+							panic(err)
+						}
+					}
+				}
+
+			}()
+		}
+	}
 }

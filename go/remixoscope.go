@@ -83,7 +83,7 @@ func (config *Config) marshal(tracks map[string]Track) (outstring []string) {
 	return out
 }
 
-func getfileinfo(sox, filename string) (samplelength uint, channels uint) {
+func Getfileinfo(sox, filename string) (samplelength uint, channels uint) {
 	getwd, _ := os.Getwd()
 	p, err := exec.Run(sox, []string{"soxi", filename}, os.Environ(), getwd, exec.DevNull, exec.Pipe, exec.Pipe)
 	if err != nil {
@@ -157,7 +157,7 @@ func (config *Config) readinputlist() map[string]Input {
 				panic(fmt.Sprintf("bad int in inputlist length %s: %s", lengthstr, err))
 			}
 			var samplelength uint
-			samplelength, info.Channels = config.getfileinfo(filename)
+			samplelength, info.Channels = Getfileinfo(config.Sox, filename)
 			info.Beatlength = samplelength / info.Beats
 		}
 	}
@@ -172,26 +172,7 @@ func (config *Config) Writeanalysis() {
 	tracks := make(map[string]Track)
 	for filename, info := range t {
 		fmt.Fprintf(os.Stderr, "starting file %s\n", filename)
-		remixspec := make([]string, 0)
-		if info.Channels == 1 {
-			remixspec = append(remixspec, []string{"remix", "1", "1"}...)
-			// stereo is a noop
-			// everything >2 channels doesn't have enough information so I am assuming the layout based on mpeg standards
-		} else if info.Channels == 3 {
-			remixspec = append(remixspec, []string{"remix", "1,3", "2,3"}...)
-		} else if info.Channels == 4 {
-			remixspec = append(remixspec, []string{"remix", "1,3,4", "2,3,4"}...)
-		} else if info.Channels == 5 {
-			remixspec = append(remixspec, []string{"remix", "1,3,4", "2,3,5"}...)
-		} else if info.Channels == 6 { // 5.1
-			remixspec = append(remixspec, []string{"remix", "1,3,4,5", "2,3,4,6"}...)
-		} else if info.Channels == 7 { // 6.1
-			remixspec = append(remixspec, []string{"remix", "1,3,4,5,7", "2,3,4,6,7"}...)
-		} else if info.Channels == 8 { // 7.1
-			remixspec = append(remixspec, []string{"remix", "1,3,4,5,7", "2,3,4,6,8"}...)
-		} else if info.Channels > 8 { // no idea, just take first two
-			remixspec = append(remixspec, []string{"remix", "1", "2"}...)
-		}
+
 
 		//		tracks = tracks[:1+len(tracks)]
 		// loop over bands
@@ -203,7 +184,7 @@ func (config *Config) Writeanalysis() {
 		}
 		for band := uint(0); band < config.Bands; band++ {
 			var i uint = 0
-			datachan, quitchan := config.openband(remixspec, filename, band)
+			datachan, quitchan := Openband(info.Channels, config.Sox, config.Soxopts, filename, band, config.Bands)
 			fmt.Fprint(os.Stderr, "got channels\n")
 			fmt.Fprintf(os.Stderr, "beatlength %d, band %d / %d, beats %d\n", info.Beatlength, band, config.Bands, info.Beats)
 		L:
@@ -257,15 +238,36 @@ func (config *Config) Writeanalysis() {
 	}
 }
 
-func (config *Config) openband(remixspec []string, filename string, band uint) (datachan chan Frame, quitchan chan bool) {
-	bandwidth := 22050 / config.Bands
+func Openband(channels uint, sox string, soxopts []string, filename string, band, bands uint) (datachan chan Frame, quitchan chan bool) {
+	bandwidth := 22050 / bands
 	bandlow := band * bandwidth
 	bandhigh := bandlow + bandwidth
 
+	remixspec := make([]string, 0)
+	if channels == 1 {
+		remixspec = append(remixspec, []string{"remix", "1", "1"}...)
+		// stereo is a noop
+		// everything >2 channels doesn't have enough information so I am assuming the layout based on mpeg standards
+	} else if channels == 3 {
+		remixspec = append(remixspec, []string{"remix", "1,3", "2,3"}...)
+	} else if channels == 4 {
+		remixspec = append(remixspec, []string{"remix", "1,3,4", "2,3,4"}...)
+	} else if channels == 5 {
+		remixspec = append(remixspec, []string{"remix", "1,3,4", "2,3,5"}...)
+	} else if channels == 6 { // 5.1
+		remixspec = append(remixspec, []string{"remix", "1,3,4,5", "2,3,4,6"}...)
+	} else if channels == 7 { // 6.1
+		remixspec = append(remixspec, []string{"remix", "1,3,4,5,7", "2,3,4,6,7"}...)
+	} else if channels == 8 { // 7.1
+		remixspec = append(remixspec, []string{"remix", "1,3,4,5,7", "2,3,4,6,8"}...)
+	} else if channels > 8 { // no idea, just take first two
+		remixspec = append(remixspec, []string{"remix", "1", "2"}...)
+	}
+	
 	currsoxopts := make([]string, 0)
 	currsoxopts = append(currsoxopts, "sox")
 	currsoxopts = append(currsoxopts, filename)
-	currsoxopts = append(currsoxopts, config.Soxopts...)
+	currsoxopts = append(currsoxopts, soxopts...)
 	currsoxopts = append(currsoxopts, "-")
 	currsoxopts = append(currsoxopts, remixspec...)
 	currsoxopts = append(currsoxopts, "sinc")
@@ -279,7 +281,7 @@ func (config *Config) openband(remixspec []string, filename string, band uint) (
 	currsoxopts = append(currsoxopts, []string{"channels", "2"}...)
 
 	fmt.Fprintln(os.Stderr, strings.Join(currsoxopts, " "))
-	return Startsox(config.Sox, currsoxopts)
+	return Startsox(sox, currsoxopts)
 }
 
 func Startsox(sox string, currsoxopts []string) (datachan chan Frame, quitchan chan bool) {
@@ -290,7 +292,7 @@ func Startsox(sox string, currsoxopts []string) (datachan chan Frame, quitchan c
 	}
 	fmt.Fprintf(os.Stderr, "sox pid is %d\n", p.Pid)
 	// some day this will use libsox
-	datachan = make(chan Frame)
+	datachan = make(chan Frame, 5)
 	quitchan = make(chan bool)
 	go func() {
 		for {
@@ -300,6 +302,8 @@ func Startsox(sox string, currsoxopts []string) (datachan chan Frame, quitchan c
 				if err != os.EOF {
 					panic(err)
 				} else {
+					close(datachan)
+					close(quitchan)
 					break
 				}
 			}
@@ -308,6 +312,8 @@ func Startsox(sox string, currsoxopts []string) (datachan chan Frame, quitchan c
 				if err != os.EOF {
 					panic(err)
 				} else {
+					close(datachan)
+					close(quitchan)
 					break 
 				}
 			}
