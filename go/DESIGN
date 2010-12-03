@@ -7,7 +7,8 @@ Args:
 -sourcelist: filename
 -samplerate: uint in 22050, 44100*, 48000
 -soxpath: exec filename
--beatlength: uint, samples
+-bands: duh
+-beatlength: uint, samples. this is output, NOT sources. those are determined on a per-source basis
 -tmpdir: tmp dir, better exist or i complain
 -outputdir: better exist or i die
 remaining args are input files
@@ -34,7 +35,11 @@ type source struct {
 }
 var sources []source
 
-opensrcband takes args filename, buflength, band, bands. it figures out remixspec args, passes all sox opts to startsox, returns channel of audiobuffers
+call getfileinfo to determine buflength.
+
+2nd stage, sort sourcelist randomly, open new out
+
+opensrcband takes args filename, buflength, band. it figures out remixspec args, sinc args, passes all sox opts to startsox, returns <-channel of audiobuffers
 
 type audiobuffer {
     left, right []int16
@@ -42,10 +47,13 @@ type audiobuffer {
 
 when EOF is reached, channel is closed. if channel is closed by other end, goroutine returns
 
-startsox takes sox path, soxopts, returns Cmd struct
+openinputband takes buflength, band. it iterates over input files, calling opensrcband on each one when the previous channel is closed. returns <-chan audiobuffer. if consumer closes channel, goroutine returns
+
+startsox takes sox path, soxopts, pipeflags returns Cmd struct
 
 openoutfile takes args channels []chan audiobuffer, outputname, tmpdir
 
 mkpipe takes tmpdir and return pipe object
 pipe object deletes fifo on closure
 
+getfileinfo runs soxi

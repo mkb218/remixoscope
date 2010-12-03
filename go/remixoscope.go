@@ -1,4 +1,4 @@
-package remixoscope
+package main
 
 import (
 	"bufio"
@@ -12,115 +12,105 @@ import (
 	"strconv"
 	"bytes"
 	ioutil "io/ioutil"
-);
-type Soxsample int32
-type Frame struct {
-	Left, Right int16
+)
+
+type buffer struct {
+	left, right []int16
 }
 
-type Bucket struct {
-	Left, Right float64
+type bucket struct {
+	left, right float64
 }
 
-type Beat struct {
-	Buckets []Bucket // one frame per band
-}
-type Track struct {
-	Beats []Beat
-	Info *Input
+type beat struct {
+	buckets []bucket // one frame per band
 }
 
-type Config struct {
-	Inputlist string
-	Bands     uint
-	Sox       string
-	Soxopts   []string
-	Output    *bufio.Writer
+type source struct {
+	filename string
+	beats    []beat
 }
 
-type Input struct {
-	Beats      uint
-	Beatlength uint
-	Channels   uint
+var sources []source
+
+var soxpath string
+var soxformatopts []string
+var tmpdir string
+var outputdir string
+var beatlength uint
+var bands uint
+
+func shuffle(v Vector) {
+	for i := len(v) - 1; i >= 1; i-- {
+		j := rand.Intn(i)
+		sv.Swap(i, j)
+	}
 }
 
-type StringWriter struct {
-	out *string
-}
-
-func (this *StringWriter) Write(p []byte) (n int, err os.Error) {
-	tmp := fmt.Sprintf("%s", p)
-	this.out = &tmp
-	return len(tmp), nil
-}
-
-func (config *Config) marshal(tracks map[string]Track) (outstring []string) {
+func marshal() (outstring []string) {
 	// <bandcount>|trackname|beat0band0lbeat0band0r...Beat0bandNr
 	// numbers aren't intended to be human readable, but it is easier to emit human readable integers
 	out := make([]string, 0)
-	out = append(out, fmt.Sprintf("%d", config.Bands))
-	for trackname, track := range tracks {
-		out = append(out, fmt.Sprintf("|%s|%d|", trackname, track.Info.Beats))
-		if track.Info.Beats <= 128 {
-			for i := uint(0); i < config.Bands; i += 1 {
-				for j := uint(0); j < track.Info.Beats; j += 1 {
-					fmt.Fprintf(os.Stderr, "%d %d %f %f\n", i, j, track.Beats[j].Buckets[i].Left, track.Beats[j].Buckets[i].Right)
+	out = append(out, fmt.Sprintf("%d", bands))
+	for _, track := range sources {
+		out = append(out, fmt.Sprintf("|%s|%d|", track.basename, len(track.beats)))
+		if track.beats <= 128 {
+			for i := uint(0); i < bands; i += 1 {
+				for j := uint(0); j < len(track.beats); j += 1 {
+					fmt.Fprintf(os.Stderr, "%d %d %f %f\n", i, j, track.beats[j].buckets[i].Left, track.beats[j].buckets[i].Right)
 				}
 			}
 		}
-		for _, beat := range track.Beats {
-			for _, band := range beat.Buckets {
-				var l uint64 = math.Float64bits(band.Left)
-				var r uint64 = math.Float64bits(band.Right)
-				var sw StringWriter
-				binary.Write(&sw, binary.BigEndian, l)
-				out = append(out, *sw.out)
-				binary.Write(&sw, binary.BigEndian, r)
-				out = append(out, *sw.out)
+		for _, beat := range track.beats {
+			for _, band := range beat.buckets {
+				l := math.Float64bits(band.left)
+				r := math.Float64bits(band.right)
+				var sb bytes.Buffer
+				binary.Write(&sb, binary.BigEndian, l)
+				binary.Write(&sb, binary.BigEndian, r)
+				out = append(out, sb.String())
 			}
 		}
 	}
 	return out
 }
 
-func Getfileinfo(sox, filename string) (samplelength uint, channels uint) {
+func getfileinfo(filename string) (samplelength uint, channels uint) {
 	getwd, _ := os.Getwd()
-	p, err := exec.Run(sox, []string{"soxi", filename}, os.Environ(), getwd, exec.DevNull, exec.Pipe, exec.Pipe)
+	p, err := exec.Run(soxpath, []string{"soxi", filename}, os.Environ(), getwd, exec.DevNull, exec.Pipe, exec.Pipe)
 	if err != nil {
 		panic(fmt.Sprintf("couldn't open soxi on file %s! %s", filename, err))
 	}
 
-	var soxierr []byte
-	soxierr, err = ioutil.ReadAll(p.Stderr)
+	soxierr, err := ioutil.ReadAll(p.Stderr)
 	if err != nil {
 		panic(fmt.Sprintf("Error reading soxi stderr %s", err))
 	}
 	if len(soxierr) > 0 {
 		panic(fmt.Sprintf("soxi had stderr %s", soxierr))
 	}
-	var soxiout []byte
-	soxiout, err = ioutil.ReadAll(p.Stdout)
-	if err != nil {
-		panic(fmt.Sprintf("Error reading soxi stdout %s", err))
+
+	soxiout := bufio.NewReader(p.Stdout)
+
+	durexp := regexp.MustCompile("^Duration.* ([0-9]+) samples")
+	chanexp := regexp.MustCompile("^Channels.* ([0-9]+)")
+	for sampledone, channelsdone := false, false; !sampledone && !channelsdone; {
+		line, err := soxiout.ReadString('\n')
+		if durexp.MatchString(line) {
+			samplelength, err = strconv.Atoui(durexp.FindStringSubmatch(line)[1])
+			sampledone = true
+		} else if chanexp.MatchString(line) {
+			channels, err = strconv.Atoui(chanexp.FindStringSubmatch(line)[1])
+			channelsdone = true
+		}
+		if err != nil {
+			panic(fmt.Sprintf("bad int returned from soxi! %s: %s", line, err))
+		}
 	}
 
 	err = p.Close()
 	if err != nil {
 		panic(fmt.Sprintf("soxi returned err %s", err))
-	}
-
-	durexp := regexp.MustCompile("^Duration.* ([0-9]+) samples")
-	chanexp := regexp.MustCompile("^Channels.* ([0-9]+)")
-	for _, line := range strings.Split(string(soxiout), "\n", -1) {
-		var err os.Error = nil
-		if durexp.MatchString(line) {
-			samplelength, err = strconv.Atoui(durexp.FindStringSubmatch(line)[1])
-		} else if chanexp.MatchString(line) {
-			channels, err = strconv.Atoui(chanexp.FindStringSubmatch(line)[1])
-		}
-		if err != nil {
-			panic(fmt.Sprintf("bad int returned from soxi! %s: %s", line, err))
-		}
 	}
 
 	return samplelength, channels
@@ -132,24 +122,26 @@ func Getfileinfo(sox, filename string) (samplelength uint, channels uint) {
 // for each band
 // channels[i] = openband(file, i, width)
 
-func (config *Config) readinputlist() map[string]Input {
+func readinputlist(inputlist string) {
 	in := false
-	tracks := make(map[string]Input)
+
 	var filename string
-	var info Input
-	b, err := ioutil.ReadFile(config.Inputlist)
-	filestuff := bytes.NewBuffer(b).String()
+
+	f, err := os.Open(inputlist, os.O_RDONLY, 0)
 	if err != nil {
 		panic(fmt.Sprintf("error reading inputlist %s\n", err))
 	}
-	lines := strings.Split(filestuff, "\n", -1)
-	for _, line := range lines {
+
+	b := bufio.NewReader(f)
+
+	for {
+		line := b.ReadString('\n')
 		if strings.HasPrefix(line, "BEGIN ") {
 			in = true
 			filename = (strings.Split(line, " ", 2))[1]
 		} else if line == "END" {
 			in = false
-			tracks[filename] = info
+			sources = append(sources, source{filename})
 		} else if strings.HasPrefix(line, "LENGTH ") {
 			lengthstr := (strings.Split(line, " ", 2))[1]
 			info.Beats, err = strconv.Atoui(lengthstr)
@@ -164,9 +156,9 @@ func (config *Config) readinputlist() map[string]Input {
 	if in {
 		panic(fmt.Sprintf("unfinished business reading input list", err))
 	}
-	return tracks
 }
 
+/*
 func (config *Config) Writeanalysis() {
 	t := config.readinputlist()
 	tracks := make(map[string]Track)
@@ -216,8 +208,8 @@ func (config *Config) Writeanalysis() {
 				trackdata.Beats[beatno].Buckets[bandno].Left = math.Sqrt(trackdata.Beats[beatno].Buckets[bandno].Left / float64(info.Beatlength))
 				trackdata.Beats[beatno].Buckets[bandno].Right = math.Sqrt(trackdata.Beats[beatno].Buckets[bandno].Right / float64(info.Beatlength))
 			}
-		}*/
-		
+		}
+
 		tracks[filename] = trackdata
 	}
 
@@ -236,92 +228,102 @@ func (config *Config) Writeanalysis() {
 	if err != nil {
 		panic(fmt.Sprintf("flushing output failed! %s", err))
 	}
-}
+}*/
 
-func Openband(channels uint, sox string, soxopts []string, filename string, band, bands uint) (datachan chan Frame, quitchan chan bool) {
+func opensrcband(filename string, band, bands uint) chan buffer {
 	bandwidth := 22050 / bands
 	bandlow := band * bandwidth
 	bandhigh := bandlow + bandwidth
 
-	remixspec := make([]string, 0)
-	if channels == 1 {
-		remixspec = append(remixspec, []string{"remix", "1", "1"}...)
-		// stereo is a noop
-		// everything >2 channels doesn't have enough information so I am assuming the layout based on mpeg standards
-	} else if channels == 3 {
-		remixspec = append(remixspec, []string{"remix", "1,3", "2,3"}...)
-	} else if channels == 4 {
-		remixspec = append(remixspec, []string{"remix", "1,3,4", "2,3,4"}...)
-	} else if channels == 5 {
-		remixspec = append(remixspec, []string{"remix", "1,3,4", "2,3,5"}...)
-	} else if channels == 6 { // 5.1
-		remixspec = append(remixspec, []string{"remix", "1,3,4,5", "2,3,4,6"}...)
-	} else if channels == 7 { // 6.1
-		remixspec = append(remixspec, []string{"remix", "1,3,4,5,7", "2,3,4,6,7"}...)
-	} else if channels == 8 { // 7.1
-		remixspec = append(remixspec, []string{"remix", "1,3,4,5,7", "2,3,4,6,8"}...)
-	} else if channels > 8 { // no idea, just take first two
-		remixspec = append(remixspec, []string{"remix", "1", "2"}...)
-	}
-	
+	samplelength, channels := getfileinfo(filename)
+
 	currsoxopts := make([]string, 0)
 	currsoxopts = append(currsoxopts, "sox")
 	currsoxopts = append(currsoxopts, filename)
-	currsoxopts = append(currsoxopts, soxopts...)
+	currsoxopts = append(currsoxopts, soxformatopts...)
 	currsoxopts = append(currsoxopts, "-")
-	currsoxopts = append(currsoxopts, remixspec...)
+
+	if channels == 1 {
+		currsoxopts = append(currsoxopts, []string{"remix", "1", "1"}...)
+		// stereo is a noop
+		// everything >2 channels doesn't have enough information so I am assuming the layout based on mpeg standards
+	} else if channels == 3 {
+		currsoxopts = append(currsoxopts, []string{"remix", "1,3", "2,3"}...)
+	} else if channels == 4 {
+		currsoxopts = append(currsoxopts, []string{"remix", "1,3,4", "2,3,4"}...)
+	} else if channels == 5 {
+		currsoxopts = append(currsoxopts, []string{"remix", "1,3,4", "2,3,5"}...)
+	} else if channels == 6 { // 5.1
+		currsoxopts = append(currsoxopts, []string{"remix", "1,3,4,5", "2,3,4,6"}...)
+	} else if channels == 7 { // 6.1
+		currsoxopts = append(currsoxopts, []string{"remix", "1,3,4,5,7", "2,3,4,6,7"}...)
+	} else if channels == 8 { // 7.1
+		currsoxopts = append(currsoxopts, []string{"remix", "1,3,4,5,7", "2,3,4,6,8"}...)
+	} else if channels > 8 { // no idea, just take first two
+		currsoxopts = append(currsoxopts, []string{"remix", "1", "2"}...)
+	}
+
 	currsoxopts = append(currsoxopts, "sinc")
 
 	if bandhigh >= 22050 {
 		currsoxopts = append(currsoxopts, strconv.Uitoa(bandlow))
 	} else {
-		currsoxopts = append(currsoxopts, strconv.Uitoa(bandlow) + "-" + strconv.Uitoa(bandhigh))
+		currsoxopts = append(currsoxopts, strconv.Uitoa(bandlow)+"-"+strconv.Uitoa(bandhigh))
 	}
 
 	currsoxopts = append(currsoxopts, []string{"channels", "2"}...)
 
 	fmt.Fprintln(os.Stderr, strings.Join(currsoxopts, " "))
-	return Startsox(sox, currsoxopts)
+	cmd := startsox(sox, currsoxopts)
+	// some day this will use libsox
+	datachan = make(chan buffer, 5)
+	go func() {
+		for {
+			var frame buffer
+			err := binary.Read(cmd.Stdout, binary.BigEndian, &frame.left)
+			if err != nil {
+				if err != os.EOF {
+					panic(err)
+				} else {
+					fmt.Fprintln(os.Stderr, "Done reading file, closing datachan")
+					close(datachan)
+					break
+				}
+			}
+			err = binary.Read(cmd.Stdout, binary.BigEndian, &frame.right)
+			if err != nil {
+				if err != os.EOF {
+					panic(err)
+				} else {
+					fmt.Fprintln(os.Stderr, "Done reading file, closing datachan")
+					close(datachan)
+					break
+				}
+			}
+			datachan <- frame
+			if closed(datachan) {
+				fmt.Fprintln(os.Stderr, "Output channel closed, returning")
+				break
+			}
+		}
+	}()
+	return datachan
 }
 
-func Startsox(sox string, currsoxopts []string) (datachan chan Frame, quitchan chan bool) {
+func startsox(sox string, currsoxopts []string, outpipe bool) exec.Cmd {
 	getwd, _ := os.Getwd()
-	p, err := exec.Run(sox, currsoxopts, os.Environ(), getwd, exec.DevNull, exec.Pipe, exec.PassThrough)
+	outstat := exec.Pipe
+	if (!outpipe) {
+		outstat = exec.DevNull
+	}
+	p, err := exec.Run(sox, currsoxopts, os.Environ(), getwd, exec.DevNull, outstat, exec.PassThrough)
 	if err != nil {
 		panic(fmt.Sprintf("couldn't open band for reason %s", err))
 	}
 	fmt.Fprintf(os.Stderr, "sox pid is %d\n", p.Pid)
-	// some day this will use libsox
-	datachan = make(chan Frame, 5)
-	quitchan = make(chan bool)
-	go func() {
-		for {
-			frame := new(Frame)
-			err := binary.Read(p.Stdout, binary.BigEndian, &frame.Left)
-			if err != nil {
-				if err != os.EOF {
-					panic(err)
-				} else {
-					close(datachan)
-					close(quitchan)
-					break
-				}
-			}
-			err = binary.Read(p.Stdout, binary.BigEndian, &frame.Right)
-			if err != nil {
-				if err != os.EOF {
-					panic(err)
-				} else {
-					close(datachan)
-					close(quitchan)
-					break 
-				}
-			}
-			datachan <- *frame
-		}
-		fmt.Fprintln(os.Stderr, "Done reading file")
-		quitchan <- true
-		fmt.Fprintln(os.Stderr, "Quit message sent. Sox out.")
-	}()
-	return datachan, quitchan
+	return p
+}
+
+func main() {
+	readflags()
 }
