@@ -11,6 +11,7 @@ Args:
 -beatlength: uint, samples. this is output, NOT sources. those are determined on a per-source basis
 -tmpdir: tmp dir, better exist or i complain
 -outputdir: better exist or i die
+-outputextension: default is ".remix.wav"
 remaining args are input files
 
 prep:
@@ -39,9 +40,9 @@ call getfileinfo to determine buflength.
 
 2nd stage, sort sourcelist randomly, open new out
 
-opensrcband takes args filename, buflength, band. it figures out remixspec args, sinc args, passes all sox opts to startsox, returns <-channel of audiobuffers
+opensrcband takes args filename, buflength, band. it figures out remixspec args, sinc args, passes all sox opts to startsox, returns <-channel of audiobuffers, and sample length of file. this saves another invocation of soxi
 
-type audiobuffer {
+type buffer {
     left, right []int16
 }
 

@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"flag"
+	"rand"
 	"fmt"
 	"os"
 	"math"
@@ -9,6 +11,7 @@ import (
 	"exec"
 	"regexp"
 	"strings"
+	vector "container/vector"
 	"strconv"
 	"bytes"
 	ioutil "io/ioutil"
@@ -39,11 +42,14 @@ var tmpdir string
 var outputdir string
 var beatlength uint
 var bands uint
+var outputext string
+var inputfiles []string
+var samplerate uint
 
-func shuffle(v Vector) {
+func shuffle(v vector.Vector) {
 	for i := len(v) - 1; i >= 1; i-- {
 		j := rand.Intn(i)
-		sv.Swap(i, j)
+		v.Swap(i, j)
 	}
 }
 
@@ -53,11 +59,11 @@ func marshal() (outstring []string) {
 	out := make([]string, 0)
 	out = append(out, fmt.Sprintf("%d", bands))
 	for _, track := range sources {
-		out = append(out, fmt.Sprintf("|%s|%d|", track.basename, len(track.beats)))
-		if track.beats <= 128 {
+		out = append(out, fmt.Sprintf("|%s|%d|", track.filename, len(track.beats)))
+		if len(track.beats) <= 128 {
 			for i := uint(0); i < bands; i += 1 {
-				for j := uint(0); j < len(track.beats); j += 1 {
-					fmt.Fprintf(os.Stderr, "%d %d %f %f\n", i, j, track.beats[j].buckets[i].Left, track.beats[j].buckets[i].Right)
+				for j := uint(0); j < uint(len(track.beats)); j += 1 {
+					fmt.Fprintf(os.Stderr, "%d %d %f %f\n", i, j, track.beats[j].buckets[i].left, track.beats[j].buckets[i].right)
 				}
 			}
 		}
@@ -125,8 +131,6 @@ func getfileinfo(filename string) (samplelength uint, channels uint) {
 func readinputlist(inputlist string) {
 	in := false
 
-	var filename string
-
 	f, err := os.Open(inputlist, os.O_RDONLY, 0)
 	if err != nil {
 		panic(fmt.Sprintf("error reading inputlist %s\n", err))
@@ -134,23 +138,26 @@ func readinputlist(inputlist string) {
 
 	b := bufio.NewReader(f)
 
+	var s *source
 	for {
-		line := b.ReadString('\n')
+		line, err := b.ReadString('\n')
+		if err != nil {
+			panic(err)
+		}
 		if strings.HasPrefix(line, "BEGIN ") {
 			in = true
-			filename = (strings.Split(line, " ", 2))[1]
+			s = new(source)
+			s.filename = (strings.Split(line, " ", 2))[1]
 		} else if line == "END" {
 			in = false
-			sources = append(sources, source{filename})
+			sources = append(sources, *s)
 		} else if strings.HasPrefix(line, "LENGTH ") {
 			lengthstr := (strings.Split(line, " ", 2))[1]
-			info.Beats, err = strconv.Atoui(lengthstr)
+			length, err := strconv.Atoui(lengthstr)
+			s.beats = make([]beat, length)
 			if err != nil {
 				panic(fmt.Sprintf("bad int in inputlist length %s: %s", lengthstr, err))
 			}
-			var samplelength uint
-			samplelength, info.Channels = Getfileinfo(config.Sox, filename)
-			info.Beatlength = samplelength / info.Beats
 		}
 	}
 	if in {
@@ -158,80 +165,46 @@ func readinputlist(inputlist string) {
 	}
 }
 
-/*
-func (config *Config) Writeanalysis() {
-	t := config.readinputlist()
-	tracks := make(map[string]Track)
-	for filename, info := range t {
-		fmt.Fprintf(os.Stderr, "starting file %s\n", filename)
-
-
-		//		tracks = tracks[:1+len(tracks)]
-		// loop over bands
-		var trackdata Track
-		trackdata.Beats = make([]Beat, info.Beats)
-		trackdata.Info = &info
-		for index := uint(0); index < info.Beats; index++ {
-			trackdata.Beats[index].Buckets = make([]Bucket, config.Bands)
-		}
-		for band := uint(0); band < config.Bands; band++ {
-			var i uint = 0
-			datachan, quitchan := Openband(info.Channels, config.Sox, config.Soxopts, filename, band, config.Bands)
-			fmt.Fprint(os.Stderr, "got channels\n")
-			fmt.Fprintf(os.Stderr, "beatlength %d, band %d / %d, beats %d\n", info.Beatlength, band, config.Bands, info.Beats)
-		L:
-			for {
-				select {
-				case f := <-datachan:
-					b := Bucket{float64(f.Left), float64(f.Right)}
-					dex := i / info.Beatlength
-					if i%10000 == 0 {
-						fmt.Fprintf(os.Stderr, "%d %f %f\n", i, trackdata.Beats[dex].Buckets[band].Left, trackdata.Beats[dex].Buckets[band].Right)
-					}
-					if dex >= uint(len(trackdata.Beats)) {
-						dex = uint(len(trackdata.Beats)) - 1
-						// rolloff
-						b.Left = b.Left * float64(dex / uint(len(trackdata.Beats)))
-						b.Right = b.Right * float64(dex / uint(len(trackdata.Beats)))
-					}
-					trackdata.Beats[dex].Buckets[band].Left += math.Fabs(b.Left)
-					trackdata.Beats[dex].Buckets[band].Right += math.Fabs(b.Right)
-				case b := <-quitchan:
-					fmt.Fprintf(os.Stderr, "got quitchan msg %t\n", b)
-					break L
+func analyze(s *source) {
+	fmt.Fprintf(os.Stderr, "starting file %s\n", filename)
+	//		tracks = tracks[:1+len(tracks)]
+	// loop over bands
+	for index := 0; index < len(s.beats); index++ {
+		s.beats[index].buckets = make([]bucket, bands)
+	}
+	beatlength := samplelength / len(s.beats)
+	
+	for band := uint(0); band < bands; band++ {
+		var i uint = 0
+		datachan, samplelength := opensrcband(s.filename, band)
+		fmt.Fprint(os.Stderr, "got channels\n")
+		fmt.Fprintf(os.Stderr, "beatlength %d, band %d / %d, beats %d\n", beatlength, band, bands, len(s.beats))
+		var empty buffer
+		for {
+			 f := <-datachan:
+			if f == empty && closed(datachan) {
+				break;
+				b := bucket{float64(f.left), float64(f.right)}
+				dex := i / beatlength
+				if i%10000 == 0 {
+					fmt.Fprintf(os.Stderr, "%d %f %f\n", i, s.beats[dex].buckets[band].left, trackdata.beats[dex].buckets[band].right)
 				}
-				i++
-			}
-		}
-/*		for beatno, _ := range trackdata.Beats {
-			for bandno, _ := range trackdata.Beats[beatno].Buckets {
-				trackdata.Beats[beatno].Buckets[bandno].Left = math.Sqrt(trackdata.Beats[beatno].Buckets[bandno].Left / float64(info.Beatlength))
-				trackdata.Beats[beatno].Buckets[bandno].Right = math.Sqrt(trackdata.Beats[beatno].Buckets[bandno].Right / float64(info.Beatlength))
-			}
-		}
-
-		tracks[filename] = trackdata
-	}
-
-	outbytes := config.marshal(tracks)
-
-	fmt.Fprintf(os.Stderr, "%d\n", len(outbytes))
-
-	for _, elem := range outbytes {
-		written, err := config.Output.WriteString(elem)
-
-		if err != nil {
-			panic(fmt.Sprintf("error writing bytes. written %d err %s\n", written, err))
+				if dex >= uint(len(s.beats)) {
+					dex = uint(len(s.beats)) - 1
+					// rolloff
+					b.left = b.left * float64(dex / uint(len(s.eats)))
+					b.right = b.right * float64(dex / uint(len(s.beats)))
+				}
+				s.beats[dex].buckets[band].left += math.Fabs(b.left)
+				s.beats[dex].buckets[band].right += math.Fabs(b.right)
+			
+			i++
 		}
 	}
-	err := config.Output.Flush()
-	if err != nil {
-		panic(fmt.Sprintf("flushing output failed! %s", err))
-	}
-}*/
+}
 
-func opensrcband(filename string, band, bands uint) chan buffer {
-	bandwidth := 22050 / bands
+func opensrcband(filename string, band uint) (uint, <-chan buffer) {
+	bandwidth := samplerate / 2 / bands
 	bandlow := band * bandwidth
 	bandhigh := bandlow + bandwidth
 
@@ -265,7 +238,7 @@ func opensrcband(filename string, band, bands uint) chan buffer {
 
 	currsoxopts = append(currsoxopts, "sinc")
 
-	if bandhigh >= 22050 {
+	if bandhigh >= samplerate / 2 / bands {
 		currsoxopts = append(currsoxopts, strconv.Uitoa(bandlow))
 	} else {
 		currsoxopts = append(currsoxopts, strconv.Uitoa(bandlow)+"-"+strconv.Uitoa(bandhigh))
@@ -274,9 +247,9 @@ func opensrcband(filename string, band, bands uint) chan buffer {
 	currsoxopts = append(currsoxopts, []string{"channels", "2"}...)
 
 	fmt.Fprintln(os.Stderr, strings.Join(currsoxopts, " "))
-	cmd := startsox(sox, currsoxopts)
+	cmd := startsox(soxpath, currsoxopts, true)
 	// some day this will use libsox
-	datachan = make(chan buffer, 5)
+	datachan := make(chan buffer, 5)
 	go func() {
 		for {
 			var frame buffer
@@ -307,10 +280,10 @@ func opensrcband(filename string, band, bands uint) chan buffer {
 			}
 		}
 	}()
-	return datachan
+	return samplelength, datachan
 }
 
-func startsox(sox string, currsoxopts []string, outpipe bool) exec.Cmd {
+func startsox(sox string, currsoxopts []string, outpipe bool) *exec.Cmd {
 	getwd, _ := os.Getwd()
 	outstat := exec.Pipe
 	if (!outpipe) {
@@ -324,6 +297,63 @@ func startsox(sox string, currsoxopts []string, outpipe bool) exec.Cmd {
 	return p
 }
 
+func readflags() *string {
+	sourcelist := flag.String("sourcelist", "sourcelist.txt", "list of source files with metadata")
+	flag.UintVar(&bands, "bands", 10, "number of bands")
+	soxpath, err := exec.LookPath("sox")
+	defaults := "Default is " + soxpath
+	checksoxpath := false
+	if err != nil {
+		checksoxpath = true
+		defaults = "No sox found in path. No default"
+	}
+	flag.StringVar(&soxpath, "sox", soxpath, "Path to sox binary. "+defaults)
+	flag.UintVar(&samplerate, "samplerate", 44100, "Sample rate in hz. Default 44100")
+	flag.UintVar(&beatlength, "beatlength", 0, "Length of output beats in samples. No default")
+	flag.StringVar(&tmpdir, "tmpdir", "/tmp", "Tmpdir to hold FIFOs. Must exist.")
+	flag.StringVar(&outputdir, "outputdir", ".", "Dir to hold output files. Default is working directory")
+	flag.StringVar(&outputext, "outputext", "remix.wav", "Output default extension. Do NOT start this with a dot. Default is remix.wav")
+	
+	flag.Parse()
+	
+	if !checksoxpath || soxpath == "" {
+		fmt.Fprintln(os.Stderr, "No sox found on PATH and no sox specified")
+	}
+	
+	if beatlength == 0 {
+		fmt.Fprintln(os.Stderr, "No beatlength specified.")
+		os.Exit(1)
+	}
+	
+	if samplerate == 0 && !(samplerate == 22050 || samplerate == 44100 || samplerate == 48000) {
+		fmt.Fprintln(os.Stderr, "Bad samplerate specified")
+		os.Exit(1)
+	}
+	
+	stat, err := os.Stat(tmpdir)
+	if err != nil || !stat.IsDirectory() {
+		fmt.Fprintf(os.Stderr, "tmpdir %s does not exist or is not a directory: %s.\n", tmpdir, err.String())
+		os.Exit(1)
+	}
+
+	stat, err = os.Stat(outputdir)
+	if err != nil || !stat.IsDirectory() {
+		fmt.Fprintf(os.Stderr, "outputdir %s does not exist or is not a directory: %s.\n", outputdir, err.String())
+		os.Exit(1)
+	}
+
+	soxformatopts = append(soxformatopts, []string{"-b", "16", "-e", "signed-integer", "-B", "-r", strconv.Uitoa(samplerate), "-t", "raw"}...)
+	return sourcelist
+}
+
+func analyze(s *source) {
+	
+}
+
 func main() {
-	readflags()
+	sourcelist := readflags()
+	readinputlist(*sourcelist)
+	for i,_ := range sources {
+		analyze(&sources[i])
+	}
 }
