@@ -1,0 +1,51 @@
+Sourcelist:
+BEGIN <filename>
+BEATS <beats, uint>
+END
+
+Args:
+-sourcelist: filename
+-samplerate: uint in 22050, 44100*, 48000
+-soxpath: exec filename
+-beatlength: uint, samples
+-tmpdir: tmp dir, better exist or i complain
+-outputdir: better exist or i die
+remaining args are input files
+
+prep:
+generate sox format opts based on flags
+soxformatopts = make([]string, 0)
+append: -B
+append: -b 16
+append: -c 2
+append: -e signed
+append: -r <samplerate>
+
+first stage, read sourcelist entries into package-level list of source structs:
+type bucket struct {
+    left, right float64
+}
+type beat struct {
+    buckets []bucket
+}
+type source struct {
+    basename string
+    beats []beat
+}
+var sources []source
+
+opensrcband takes args filename, buflength, band, bands. it figures out remixspec args, passes all sox opts to startsox, returns channel of audiobuffers
+
+type audiobuffer {
+    left, right []int16
+}
+
+when EOF is reached, channel is closed. if channel is closed by other end, goroutine returns
+
+startsox takes sox path, soxopts, returns Cmd struct
+
+openoutfile takes args channels []chan audiobuffer, outputname, tmpdir
+
+mkpipe takes tmpdir and return pipe object
+pipe object deletes fifo on closure
+
