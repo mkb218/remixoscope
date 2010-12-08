@@ -45,6 +45,7 @@ var bands uint
 var outputext string
 var inputfiles []string
 var samplerate uint
+var buffersize uint
 
 func shuffle(v vector.Vector) {
 	for i := len(v) - 1; i >= 1; i-- {
@@ -165,40 +166,48 @@ func readinputlist(inputlist string) {
 	}
 }
 
+func (b buffer) empty() bool {
+	return !((b.left != nil) || (b.right != nil))
+}
+
 func analyze(s *source) {
-	fmt.Fprintf(os.Stderr, "starting file %s\n", filename)
+	fmt.Fprintf(os.Stderr, "starting file %s\n", s.filename)
 	//		tracks = tracks[:1+len(tracks)]
 	// loop over bands
 	for index := 0; index < len(s.beats); index++ {
 		s.beats[index].buckets = make([]bucket, bands)
 	}
-	beatlength := samplelength / len(s.beats)
-	
+
 	for band := uint(0); band < bands; band++ {
-		var i uint = 0
-		datachan, samplelength := opensrcband(s.filename, band)
+		i := uint(0)
+		var bi uint
+		samplelength, datachan := opensrcband(s.filename, band)
+		beatlength := samplelength / uint(len(s.beats))
 		fmt.Fprint(os.Stderr, "got channels\n")
 		fmt.Fprintf(os.Stderr, "beatlength %d, band %d / %d, beats %d\n", beatlength, band, bands, len(s.beats))
-		var empty buffer
 		for {
-			 f := <-datachan:
-			if f == empty && closed(datachan) {
-				break;
-				b := bucket{float64(f.left), float64(f.right)}
-				dex := i / beatlength
+			f := <-datachan
+			if f.empty() && closed(datachan) {
+				break
+			}
+			bi = 0
+			dex := i / beatlength
+			for ; (dex < uint(len(s.beats)) && bi < beatlength) || bi < uint(len(f.left)); bi++ {
+				b := bucket{float64(f.left[bi]), float64(f.right[bi])}
 				if i%10000 == 0 {
-					fmt.Fprintf(os.Stderr, "%d %f %f\n", i, s.beats[dex].buckets[band].left, trackdata.beats[dex].buckets[band].right)
+					fmt.Fprintf(os.Stderr, "%d %f %f\n", i, s.beats[dex].buckets[band].left, s.beats[dex].buckets[band].right)
 				}
 				if dex >= uint(len(s.beats)) {
 					dex = uint(len(s.beats)) - 1
 					// rolloff
-					b.left = b.left * float64(dex / uint(len(s.eats)))
-					b.right = b.right * float64(dex / uint(len(s.beats)))
+					b.left = b.left * float64(dex/uint(len(s.beats)))
+					b.right = b.right * float64(dex/uint(len(s.beats)))
 				}
 				s.beats[dex].buckets[band].left += math.Fabs(b.left)
 				s.beats[dex].buckets[band].right += math.Fabs(b.right)
-			
-			i++
+
+				i++
+			}
 		}
 	}
 }
@@ -238,7 +247,7 @@ func opensrcband(filename string, band uint) (uint, <-chan buffer) {
 
 	currsoxopts = append(currsoxopts, "sinc")
 
-	if bandhigh >= samplerate / 2 / bands {
+	if bandhigh >= samplerate/2/bands {
 		currsoxopts = append(currsoxopts, strconv.Uitoa(bandlow))
 	} else {
 		currsoxopts = append(currsoxopts, strconv.Uitoa(bandlow)+"-"+strconv.Uitoa(bandhigh))
@@ -253,24 +262,32 @@ func opensrcband(filename string, band uint) (uint, <-chan buffer) {
 	go func() {
 		for {
 			var frame buffer
-			err := binary.Read(cmd.Stdout, binary.BigEndian, &frame.left)
-			if err != nil {
-				if err != os.EOF {
-					panic(err)
-				} else {
-					fmt.Fprintln(os.Stderr, "Done reading file, closing datachan")
-					close(datachan)
-					break
+			frame.left = make([]int16, buffersize)
+			frame.right = make([]int16, buffersize)
+			for i := 0; i < buffersize; i++ {
+				err := binary.Read(cmd.Stdout, binary.BigEndian, &(frame.left[i]))
+				if err != nil {
+					if err != os.EOF {
+						panic(err)
+					} else {
+						fmt.Fprintln(os.Stderr, "Done reading file, closing datachan")
+						frame.left = frame.left[0:i]
+						frame.right = frame.right[0:i]
+						close(datachan)
+						break
+					}
 				}
-			}
-			err = binary.Read(cmd.Stdout, binary.BigEndian, &frame.right)
-			if err != nil {
-				if err != os.EOF {
-					panic(err)
-				} else {
-					fmt.Fprintln(os.Stderr, "Done reading file, closing datachan")
-					close(datachan)
-					break
+				err = binary.Read(cmd.Stdout, binary.BigEndian, &(frame.right[i]))
+				if err != nil {
+					if err != os.EOF {
+						panic(err)
+					} else {
+						fmt.Fprintln(os.Stderr, "Done reading file, closing datachan")
+						frame.left = frame.left[0:i]
+						frame.right = frame.right[0:i]
+						close(datachan)
+						break
+					}
 				}
 			}
 			datachan <- frame
@@ -279,6 +296,8 @@ func opensrcband(filename string, band uint) (uint, <-chan buffer) {
 				break
 			}
 		}
+		cmd.Close()
+		close(datachan)
 	}()
 	return samplelength, datachan
 }
@@ -286,7 +305,7 @@ func opensrcband(filename string, band uint) (uint, <-chan buffer) {
 func startsox(sox string, currsoxopts []string, outpipe bool) *exec.Cmd {
 	getwd, _ := os.Getwd()
 	outstat := exec.Pipe
-	if (!outpipe) {
+	if !outpipe {
 		outstat = exec.DevNull
 	}
 	p, err := exec.Run(sox, currsoxopts, os.Environ(), getwd, exec.DevNull, outstat, exec.PassThrough)
@@ -313,23 +332,23 @@ func readflags() *string {
 	flag.StringVar(&tmpdir, "tmpdir", "/tmp", "Tmpdir to hold FIFOs. Must exist.")
 	flag.StringVar(&outputdir, "outputdir", ".", "Dir to hold output files. Default is working directory")
 	flag.StringVar(&outputext, "outputext", "remix.wav", "Output default extension. Do NOT start this with a dot. Default is remix.wav")
-	
+
 	flag.Parse()
-	
+
 	if !checksoxpath || soxpath == "" {
 		fmt.Fprintln(os.Stderr, "No sox found on PATH and no sox specified")
 	}
-	
+
 	if beatlength == 0 {
 		fmt.Fprintln(os.Stderr, "No beatlength specified.")
 		os.Exit(1)
 	}
-	
+
 	if samplerate == 0 && !(samplerate == 22050 || samplerate == 44100 || samplerate == 48000) {
 		fmt.Fprintln(os.Stderr, "Bad samplerate specified")
 		os.Exit(1)
 	}
-	
+
 	stat, err := os.Stat(tmpdir)
 	if err != nil || !stat.IsDirectory() {
 		fmt.Fprintf(os.Stderr, "tmpdir %s does not exist or is not a directory: %s.\n", tmpdir, err.String())
@@ -343,17 +362,103 @@ func readflags() *string {
 	}
 
 	soxformatopts = append(soxformatopts, []string{"-b", "16", "-e", "signed-integer", "-B", "-r", strconv.Uitoa(samplerate), "-t", "raw"}...)
-	return sourcelist
-}
 
-func analyze(s *source) {
-	
+	buffersize = 512
+	return sourcelist
 }
 
 func main() {
 	sourcelist := readflags()
 	readinputlist(*sourcelist)
-	for i,_ := range sources {
+	// phase 1, analyze all sources
+	for i, _ := range sources {
 		analyze(&sources[i])
+		generate(sources[i])
 	}
+}
+
+func generate(s *source) {
+	outfilename := s.filename + "." + outputext
+	t := strings.LastIndex(outfilename, "/")
+	if t != -1 {
+		outfilename = outfilename[t+1:]
+	}
+	outfilename = outputdir + "/" + outfilename
+	channels := make([]chan buffer, 0, bands)
+	for i := 0; i < bands; i++ {
+		channels = append(channels, processinputband(s,i,openinputband(i)))
+	}
+
+	for _, c := range channels {
+		// make a fifo
+		// open the fifo
+		// make a goroutine to 
+	}
+}
+
+func openinputband(band uint) <-chan buffer {
+	sfile := flag.Arg(rand.Intn(flag.NArg()-1))
+	outchan := make(chan buffer, 5)
+	for {
+		_, inchan := opensrcband(sfile, band)
+		for {
+			buffer := <- inchan
+			if closed(inchan) || closed (outchan) {
+				break;
+			}
+			outchan <- buffer
+		}
+		if closed(outchan) {
+			close(inchan)
+			break;
+		}
+	}
+}
+
+func processinputband(s *source, band uint, channel <-chan buffer) <-chan buffer {
+	outchan := chan buffer
+	go func() {
+		origbeats := s.beats
+		buckets := make([]bucket, len(s.beats))
+		buffers := make([]buffer, len(s.beats))
+		for i := 0; i < len(buffers); i++ {
+			buffers[i].left = make([]int16, beatlength)
+			buffers[i].right = make([]int16, beatlength)
+		}
+		inbuf := <-channel
+		inbufpos := 0
+		beatpos := 0
+		done := false
+		for !done {
+			beat := beatpos / beatlength
+			buffpos := beatpos % beatlength
+			if buckets[beat].left < origbeats[beat][band].left && buckets[beat].right < origbeats[beat][band].right {
+				buffers[beat][buffpos].left += inbuf[inbufpos].left
+				buckets[beat].left += float64(inbuf[inbufpos].left)
+				buffers[beat][buffpos].right += inbuf[inbufpos].right
+				buckets[beat].right += float64(inbuf[inbufpos].right)
+				inbufpos++
+			}
+			if inbufpos >= beatlength {
+				inbufpos = 0
+				inbuf = <-channel
+			}
+			beatpos++
+			if beatpos >= beatlength {
+				beatpos = 0
+			}
+			done = true
+			for _,b := range(buckets) {
+				if !(buckets[beat].left < origbeats[beat][band].left && buckets[beat].right < origbeats[beat][band].right) {
+					done = false
+					break
+				}
+			}
+		}
+		for _, b := range(buffers) {
+			outchan <- b
+		}
+		close(outchan)
+	}()
+	return outchan
 }

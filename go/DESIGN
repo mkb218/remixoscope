@@ -58,3 +58,4 @@ mkpipe takes tmpdir and return pipe object
 pipe object deletes fifo on closure
 
 getfileinfo runs soxi
+
