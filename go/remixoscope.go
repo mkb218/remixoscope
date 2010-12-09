@@ -2,9 +2,11 @@ package main
 
 import (
 	"bufio"
+	"path"
 	"flag"
 	"rand"
 	"fmt"
+	"syscall"
 	"os"
 	"math"
 	binary "encoding/binary"
@@ -264,7 +266,7 @@ func opensrcband(filename string, band uint) (uint, <-chan buffer) {
 			var frame buffer
 			frame.left = make([]int16, buffersize)
 			frame.right = make([]int16, buffersize)
-			for i := 0; i < buffersize; i++ {
+			for i := uint(0); i < buffersize; i++ {
 				err := binary.Read(cmd.Stdout, binary.BigEndian, &(frame.left[i]))
 				if err != nil {
 					if err != os.EOF {
@@ -306,7 +308,7 @@ func startsox(sox string, currsoxopts []string, outpipe bool) *exec.Cmd {
 	getwd, _ := os.Getwd()
 	outstat := exec.Pipe
 	if !outpipe {
-		outstat = exec.DevNull
+		outstat = exec.PassThrough
 	}
 	p, err := exec.Run(sox, currsoxopts, os.Environ(), getwd, exec.DevNull, outstat, exec.PassThrough)
 	if err != nil {
@@ -373,92 +375,113 @@ func main() {
 	// phase 1, analyze all sources
 	for i, _ := range sources {
 		analyze(&sources[i])
-		generate(sources[i])
+		generate(&sources[i])
 	}
 }
 
 func generate(s *source) {
 	outfilename := s.filename + "." + outputext
-	t := strings.LastIndex(outfilename, "/")
-	if t != -1 {
-		outfilename = outfilename[t+1:]
-	}
-	outfilename = outputdir + "/" + outfilename
-	channels := make([]chan buffer, 0, bands)
-	for i := 0; i < bands; i++ {
-		channels = append(channels, processinputband(s,i,openinputband(i)))
+	basename := path.Base(outfilename)
+	outfilename = path.Join(outputdir, basename)
+	channels := make([]<-chan buffer, 0, bands)
+	for i := uint(0); i < bands; i++ {
+		channels = append(channels, openinputband(i))
 	}
 
-	for _, c := range channels {
+	fifos := make([]*os.File, 0, bands)
+	for i, c := range channels {
 		// make a fifo
-		// open the fifo
-		// make a goroutine to 
+		fifoname := path.Join(tmpdir, basename+strconv.Itoa(i))
+		errno := syscall.Mkfifo(fifoname, 0600)
+		if errno != 0 {
+			panic(os.NewSyscallError("Mkfifo", errno))
+		}
+		// open the fifo and stuff a pointer in fifos
+		fifo, err := os.Open(fifoname, os.O_WRONLY, 0)
+		if err != nil {
+			panic(err)
+		}
+		fifos = append(fifos, fifo)
+		// make a goroutine to read from the channel with processinputband and write to the fifo
+		go processinputband(s, fifo, band, c)
 	}
+
+	// start sox with all the fifos
+	// bands is number of files to read from
+	// +1 output file
+	// +1 for "-m"
+	// +1 for "sox" at start
+	opts := make([]string, 0, len(soxformatopts)+bands+3)
+	opts = append(opts, "sox", "-m")
+	opts = append(opts, soxformatopts...)
+	opts = append(opts, outfilename)
+	cmd := startsox(soxpath, opts, false)
+	msg, err := cmd.Wait()
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(msg.String())
 }
 
 func openinputband(band uint) <-chan buffer {
-	sfile := flag.Arg(rand.Intn(flag.NArg()-1))
+	sfile := flag.Arg(rand.Intn(flag.NArg() - 1))
 	outchan := make(chan buffer, 5)
 	for {
 		_, inchan := opensrcband(sfile, band)
 		for {
-			buffer := <- inchan
-			if closed(inchan) || closed (outchan) {
-				break;
+			buffer := <-inchan
+			if closed(inchan) || closed(outchan) {
+				break
 			}
 			outchan <- buffer
 		}
 		if closed(outchan) {
 			close(inchan)
-			break;
+			break
 		}
 	}
 }
 
-func processinputband(s *source, band uint, channel <-chan buffer) <-chan buffer {
-	outchan := chan buffer
-	go func() {
-		origbeats := s.beats
-		buckets := make([]bucket, len(s.beats))
-		buffers := make([]buffer, len(s.beats))
-		for i := 0; i < len(buffers); i++ {
-			buffers[i].left = make([]int16, beatlength)
-			buffers[i].right = make([]int16, beatlength)
+func processinputband(s *source, fifo os.File, band uint, channel <-chan buffer) {
+	origbeats := s.beats
+	buckets := make([]bucket, len(s.beats))
+	buffers := make([]buffer, len(s.beats))
+	for i := 0; i < len(buffers); i++ {
+		buffers[i].left = make([]int16, beatlength)
+		buffers[i].right = make([]int16, beatlength)
+	}
+	inbuf := <-channel
+	inbufpos := 0
+	beatpos := 0
+	done := false
+	for !done {
+		beat := beatpos / beatlength
+		buffpos := beatpos % beatlength
+		if buckets[beat].left < origbeats[beat][band].left && buckets[beat].right < origbeats[beat][band].right {
+			buffers[beat][buffpos].left += inbuf[inbufpos].left
+			buckets[beat].left += float64(inbuf[inbufpos].left)
+			buffers[beat][buffpos].right += inbuf[inbufpos].right
+			buckets[beat].right += float64(inbuf[inbufpos].right)
+			inbufpos++
 		}
-		inbuf := <-channel
-		inbufpos := 0
-		beatpos := 0
-		done := false
-		for !done {
-			beat := beatpos / beatlength
-			buffpos := beatpos % beatlength
-			if buckets[beat].left < origbeats[beat][band].left && buckets[beat].right < origbeats[beat][band].right {
-				buffers[beat][buffpos].left += inbuf[inbufpos].left
-				buckets[beat].left += float64(inbuf[inbufpos].left)
-				buffers[beat][buffpos].right += inbuf[inbufpos].right
-				buckets[beat].right += float64(inbuf[inbufpos].right)
-				inbufpos++
-			}
-			if inbufpos >= beatlength {
-				inbufpos = 0
-				inbuf = <-channel
-			}
-			beatpos++
-			if beatpos >= beatlength {
-				beatpos = 0
-			}
-			done = true
-			for _,b := range(buckets) {
-				if !(buckets[beat].left < origbeats[beat][band].left && buckets[beat].right < origbeats[beat][band].right) {
-					done = false
-					break
-				}
+		if inbufpos >= beatlength {
+			inbufpos = 0
+			inbuf = <-channel
+		}
+		beatpos++
+		if beatpos >= beatlength {
+			beatpos = 0
+		}
+		done = true
+		for _, b := range buckets {
+			if !(buckets[beat].left < origbeats[beat][band].left && buckets[beat].right < origbeats[beat][band].right) {
+				done = false
+				break
 			}
 		}
-		for _, b := range(buffers) {
-			outchan <- b
-		}
-		close(outchan)
-	}()
-	return outchan
+	}
+	for _, b := range buffers {
+		binary.Write(fifo, binary.BigEndian, b.left)
+		binary.Write(fifo, binary.BigEndian, b.right)
+	}
 }
