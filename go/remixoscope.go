@@ -66,7 +66,7 @@ func marshal() (outstring []string) {
 		if len(track.beats) <= 128 {
 			for i := uint(0); i < bands; i += 1 {
 				for j := uint(0); j < uint(len(track.beats)); j += 1 {
-					fmt.Fprintf(os.Stderr, "%d %d %f %f\n", i, j, track.beats[j].buckets[i].left, track.beats[j].buckets[i].right)
+					//					fmt.Fprintf(os.Stderr, "%d %d %f %f\n", i, j, track.beats[j].buckets[i].left, track.beats[j].buckets[i].right)
 				}
 			}
 		}
@@ -88,7 +88,7 @@ func getfileinfo(filename string) (samplelength uint, channels uint) {
 	getwd, _ := os.Getwd()
 	p, err := exec.Run(soxpath, []string{"soxi", filename}, os.Environ(), getwd, exec.DevNull, exec.Pipe, exec.Pipe)
 	if err != nil {
-		panic(fmt.Sprintf("couldn't open soxi on file %s! %s", filename, err))
+		panic(fmt.Sprintf("couldn't open soxi %s on file %s! %s", soxpath, filename, err))
 	}
 
 	soxierr, err := ioutil.ReadAll(p.Stderr)
@@ -103,8 +103,10 @@ func getfileinfo(filename string) (samplelength uint, channels uint) {
 
 	durexp := regexp.MustCompile("^Duration.* ([0-9]+) samples")
 	chanexp := regexp.MustCompile("^Channels.* ([0-9]+)")
-	for sampledone, channelsdone := false, false; !sampledone && !channelsdone; {
+	for sampledone, channelsdone := false, false; !sampledone || !channelsdone; {
 		line, err := soxiout.ReadString('\n')
+		line = strings.TrimSpace(line)
+		fmt.Println(line)
 		if durexp.MatchString(line) {
 			samplelength, err = strconv.Atoui(durexp.FindStringSubmatch(line)[1])
 			sampledone = true
@@ -142,20 +144,27 @@ func readinputlist(inputlist string) {
 	b := bufio.NewReader(f)
 
 	var s *source
-	for {
+	done := false
+	for !done {
 		line, err := b.ReadString('\n')
 		if err != nil {
-			panic(err)
+			if err == os.EOF {
+				done = true
+			} else {
+				panic(err)
+			}
 		}
+		line = strings.TrimSpace(line)
+		fmt.Fprintln(os.Stderr, line)
 		if strings.HasPrefix(line, "BEGIN ") {
 			in = true
 			s = new(source)
-			s.filename = (strings.Split(line, " ", 2))[1]
+			s.filename = (strings.Split(line, " ", -1))[1]
 		} else if line == "END" {
 			in = false
 			sources = append(sources, *s)
 		} else if strings.HasPrefix(line, "LENGTH ") {
-			lengthstr := (strings.Split(line, " ", 2))[1]
+			lengthstr := (strings.Split(line, " ", -1))[1]
 			length, err := strconv.Atoui(lengthstr)
 			s.beats = make([]beat, length)
 			if err != nil {
@@ -193,12 +202,17 @@ func analyze(s *source) {
 				break
 			}
 			bi = 0
+			//			fmt.Println(samplelength, len(s.beats))
 			dex := i / beatlength
-			for ; (dex < uint(len(s.beats)) && bi < beatlength) || bi < uint(len(f.left)); bi++ {
-				b := bucket{float64(f.left[bi]), float64(f.right[bi])}
-				if i%10000 == 0 {
-					fmt.Fprintf(os.Stderr, "%d %f %f\n", i, s.beats[dex].buckets[band].left, s.beats[dex].buckets[band].right)
+			defer func() {
+				e := recover()
+				if e != nil {
+					fmt.Println(bi, beatlength, dex, len(s.beats), len(f.left), len(f.right))
+					panic(e)
 				}
+			}()
+			for ; (dex < uint(len(s.beats)) && bi < beatlength) && bi < uint(len(f.left)); bi++ {
+				b := bucket{float64(f.left[bi]), float64(f.right[bi])}
 				if dex >= uint(len(s.beats)) {
 					dex = uint(len(s.beats)) - 1
 					// rolloff
@@ -207,6 +221,9 @@ func analyze(s *source) {
 				}
 				s.beats[dex].buckets[band].left += math.Fabs(b.left)
 				s.beats[dex].buckets[band].right += math.Fabs(b.right)
+				//				if i%10000 == 0 {
+				fmt.Fprintf(os.Stderr, "%d %d %f %d %f %f %f\n", i, f.left[bi], float64(f.left[bi]), f.right[bi], float64(f.right[bi]), s.beats[dex].buckets[band].left, s.beats[dex].buckets[band].right)
+				//				}
 
 				i++
 			}
@@ -249,6 +266,7 @@ func opensrcband(filename string, band uint) (uint, <-chan buffer) {
 
 	currsoxopts = append(currsoxopts, "sinc")
 
+	fmt.Println(bandhigh, samplerate/2/bands)
 	if bandhigh >= samplerate/2/bands {
 		currsoxopts = append(currsoxopts, strconv.Uitoa(bandlow))
 	} else {
@@ -262,6 +280,7 @@ func opensrcband(filename string, band uint) (uint, <-chan buffer) {
 	// some day this will use libsox
 	datachan := make(chan buffer, 5)
 	go func() {
+	OUTER:
 		for {
 			var frame buffer
 			frame.left = make([]int16, buffersize)
@@ -272,11 +291,12 @@ func opensrcband(filename string, band uint) (uint, <-chan buffer) {
 					if err != os.EOF {
 						panic(err)
 					} else {
-						fmt.Fprintln(os.Stderr, "Done reading file, closing datachan")
+						fmt.Fprintf(os.Stderr, "Done reading file at L %d, closing datachan\n", i)
 						frame.left = frame.left[0:i]
 						frame.right = frame.right[0:i]
+						datachan <- frame
 						close(datachan)
-						break
+						break OUTER
 					}
 				}
 				err = binary.Read(cmd.Stdout, binary.BigEndian, &(frame.right[i]))
@@ -284,13 +304,15 @@ func opensrcband(filename string, band uint) (uint, <-chan buffer) {
 					if err != os.EOF {
 						panic(err)
 					} else {
-						fmt.Fprintln(os.Stderr, "Done reading file, closing datachan")
+						fmt.Fprintf(os.Stderr, "Done reading file R %d, closing datachan\n", i)
 						frame.left = frame.left[0:i]
 						frame.right = frame.right[0:i]
+						datachan <- frame
 						close(datachan)
-						break
+						break OUTER
 					}
 				}
+				fmt.Fprintln(os.Stderr, i, frame.left[i], frame.right[i])
 			}
 			datachan <- frame
 			if closed(datachan) {
@@ -310,6 +332,7 @@ func startsox(sox string, currsoxopts []string, outpipe bool) *exec.Cmd {
 	if !outpipe {
 		outstat = exec.PassThrough
 	}
+	fmt.Println(currsoxopts)
 	p, err := exec.Run(sox, currsoxopts, os.Environ(), getwd, exec.DevNull, outstat, exec.PassThrough)
 	if err != nil {
 		panic(fmt.Sprintf("couldn't open band for reason %s", err))
@@ -321,13 +344,15 @@ func startsox(sox string, currsoxopts []string, outpipe bool) *exec.Cmd {
 func readflags() *string {
 	sourcelist := flag.String("sourcelist", "sourcelist.txt", "list of source files with metadata")
 	flag.UintVar(&bands, "bands", 10, "number of bands")
-	soxpath, err := exec.LookPath("sox")
+	var err os.Error
+	soxpath, err = exec.LookPath("sox")
 	defaults := "Default is " + soxpath
 	checksoxpath := false
 	if err != nil {
 		checksoxpath = true
 		defaults = "No sox found in path. No default"
 	}
+
 	flag.StringVar(&soxpath, "sox", soxpath, "Path to sox binary. "+defaults)
 	flag.UintVar(&samplerate, "samplerate", 44100, "Sample rate in hz. Default 44100")
 	flag.UintVar(&beatlength, "beatlength", 0, "Length of output beats in samples. No default")
@@ -337,7 +362,7 @@ func readflags() *string {
 
 	flag.Parse()
 
-	if !checksoxpath || soxpath == "" {
+	if checksoxpath && soxpath == "" {
 		fmt.Fprintln(os.Stderr, "No sox found on PATH and no sox specified")
 	}
 
@@ -375,35 +400,33 @@ func main() {
 	// phase 1, analyze all sources
 	for i, _ := range sources {
 		analyze(&sources[i])
+		fmt.Fprintln(os.Stderr, "done analyze")
 		generate(&sources[i])
 	}
 }
 
 func generate(s *source) {
+	fmt.Println("generate")
 	outfilename := s.filename + "." + outputext
 	basename := path.Base(outfilename)
 	outfilename = path.Join(outputdir, basename)
-	channels := make([]<-chan buffer, 0, bands)
+	fifos := make([]string, 0, bands)
 	for i := uint(0); i < bands; i++ {
-		channels = append(channels, openinputband(i))
-	}
-
-	fifos := make([]*os.File, 0, bands)
-	for i, c := range channels {
 		// make a fifo
-		fifoname := path.Join(tmpdir, basename+strconv.Itoa(i))
+		fifoname := path.Join(tmpdir, basename+strconv.Uitoa(i))
+		fmt.Fprintf(os.Stderr, "making fifo %d\n", i)
+		err := os.RemoveAll(fifoname)
+		if err != nil {
+			panic(err)
+		}
 		errno := syscall.Mkfifo(fifoname, 0600)
 		if errno != 0 {
 			panic(os.NewSyscallError("Mkfifo", errno))
 		}
-		// open the fifo and stuff a pointer in fifos
-		fifo, err := os.Open(fifoname, os.O_WRONLY, 0)
-		if err != nil {
-			panic(err)
-		}
-		fifos = append(fifos, fifo)
+		fifos = append(fifos, fifoname)
 		// make a goroutine to read from the channel with processinputband and write to the fifo
-		go processinputband(s, fifo, band, c)
+		// open the fifo inside the goroutine so the call to open doesn't block the main thread
+		go processinputband(s, fifoname, i, openinputband(i))
 	}
 
 	// start sox with all the fifos
@@ -411,12 +434,15 @@ func generate(s *source) {
 	// +1 output file
 	// +1 for "-m"
 	// +1 for "sox" at start
-	opts := make([]string, 0, len(soxformatopts)+bands+3)
+	opts := make([]string, 0, uint(len(soxformatopts))+bands+3)
 	opts = append(opts, "sox", "-m")
-	opts = append(opts, soxformatopts...)
+	for _, f := range fifos {
+		opts = append(opts, soxformatopts...)
+		opts = append(opts, f)
+	}
 	opts = append(opts, outfilename)
 	cmd := startsox(soxpath, opts, false)
-	msg, err := cmd.Wait()
+	msg, err := cmd.Wait(0)
 	if err != nil {
 		panic(err)
 	}
@@ -426,24 +452,46 @@ func generate(s *source) {
 func openinputband(band uint) <-chan buffer {
 	sfile := flag.Arg(rand.Intn(flag.NArg() - 1))
 	outchan := make(chan buffer, 5)
-	for {
-		_, inchan := opensrcband(sfile, band)
+	go func() {
 		for {
-			buffer := <-inchan
-			if closed(inchan) || closed(outchan) {
+			_, inchan := opensrcband(sfile, band)
+			for {
+				buffer := <-inchan
+				if closed(inchan) || closed(outchan) {
+					break
+				}
+				outchan <- buffer
+			}
+			if closed(outchan) {
+				close(inchan)
 				break
 			}
-			outchan <- buffer
 		}
-		if closed(outchan) {
-			close(inchan)
-			break
-		}
-	}
+	}()
+	return outchan
 }
 
-func processinputband(s *source, fifo os.File, band uint, channel <-chan buffer) {
+func processinputband(s *source, fifoname string, band uint, channel <-chan buffer) {
+	fifo, err := os.Open(fifoname, os.O_WRONLY, 0)
+	if err != nil {
+		panic(err)
+	}
+
+	defer func() {
+		eek := recover()
+		err := fifo.Close()
+		if err != nil {
+			panic(err)
+		}
+		if eek != nil {
+			panic(eek)
+		}
+	}()
+
 	origbeats := s.beats
+	for _, b := range s.beats {
+		fmt.Println(b)
+	}
 	buckets := make([]bucket, len(s.beats))
 	buffers := make([]buffer, len(s.beats))
 	for i := 0; i < len(buffers); i++ {
@@ -452,19 +500,19 @@ func processinputband(s *source, fifo os.File, band uint, channel <-chan buffer)
 	}
 	inbuf := <-channel
 	inbufpos := 0
-	beatpos := 0
+	beatpos := uint(0)
 	done := false
 	for !done {
 		beat := beatpos / beatlength
 		buffpos := beatpos % beatlength
-		if buckets[beat].left < origbeats[beat][band].left && buckets[beat].right < origbeats[beat][band].right {
-			buffers[beat][buffpos].left += inbuf[inbufpos].left
-			buckets[beat].left += float64(inbuf[inbufpos].left)
-			buffers[beat][buffpos].right += inbuf[inbufpos].right
-			buckets[beat].right += float64(inbuf[inbufpos].right)
+		if buckets[beat].left < origbeats[beat].buckets[band].left && buckets[beat].right < origbeats[beat].buckets[band].right {
+			buffers[beat].left[buffpos] += inbuf.left[inbufpos]
+			buckets[beat].left += float64(inbuf.left[inbufpos])
+			buffers[beat].right[buffpos] += inbuf.right[inbufpos]
+			buckets[beat].right += float64(inbuf.right[inbufpos])
 			inbufpos++
 		}
-		if inbufpos >= beatlength {
+		if uint(inbufpos) >= beatlength {
 			inbufpos = 0
 			inbuf = <-channel
 		}
@@ -474,7 +522,7 @@ func processinputband(s *source, fifo os.File, band uint, channel <-chan buffer)
 		}
 		done = true
 		for _, b := range buckets {
-			if !(buckets[beat].left < origbeats[beat][band].left && buckets[beat].right < origbeats[beat][band].right) {
+			if !(b.left < origbeats[beat].buckets[band].left && b.right < origbeats[beat].buckets[band].right) {
 				done = false
 				break
 			}
